@@ -72,9 +72,16 @@ class SystemState:
         self._broadcast_fn = fn
 
     async def broadcast(self, event_type: str, data: dict) -> None:
-        """Broadcast to all connected WebSocket clients."""
-        if self._broadcast_fn:
-            await self._broadcast_fn(event_type, data)
+        """Broadcast to all connected WebSocket clients. Never raises."""
+        if not self._broadcast_fn:
+            return
+        try:
+            result = self._broadcast_fn(event_type, data)
+            if hasattr(result, "__await__"):
+                await result
+        except Exception:
+            # Never let broadcast errors crash the caller (scheduler, etc.)
+            pass
 
     # ── Market updates ──────────────────────────────────────────
 

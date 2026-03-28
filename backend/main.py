@@ -33,15 +33,17 @@ ws_connections: set[WebSocket] = set()
 
 
 async def broadcast(event_type: str, data: dict) -> None:
-    """Broadcast an event to all connected WebSocket clients."""
+    """Broadcast an event to all connected WebSocket clients. Never raises."""
+    if not ws_connections:
+        return
     message = {"type": event_type, "data": data}
-    disconnected = set()
-    for ws in ws_connections:
+    disconnected: set[WebSocket] = set()
+    for ws in list(ws_connections):  # copy to avoid mutation during iteration
         try:
             await ws.send_json(message)
         except Exception:
             disconnected.add(ws)
-    ws_connections -= disconnected
+    ws_connections.difference_update(disconnected)
 
 
 # Wire the broadcast function into the shared state

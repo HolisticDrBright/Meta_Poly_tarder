@@ -156,8 +156,12 @@ class TradingScheduler:
             markets = [self._gamma_to_market_state(gm) for gm in gamma_markets]
             self.state.update_markets(markets)
             logger.debug(f"Refreshed {len(markets)} markets")
+        except Exception as e:
+            logger.error(f"Market refresh failed: {e}")
+            return  # Don't try to broadcast if refresh failed
 
-            # Broadcast price updates
+        # Broadcast price updates (separate try so refresh data is still saved)
+        try:
             for m in markets[:20]:
                 await self.state.broadcast("price_update", {
                     "market_id": m.market_id,
@@ -165,7 +169,7 @@ class TradingScheduler:
                     "no_price": m.no_price,
                 })
         except Exception as e:
-            logger.error(f"Market refresh failed: {e}")
+            logger.debug(f"Price broadcast failed (non-fatal): {e}")
 
     async def run_ensemble_probabilities(self) -> None:
         """
