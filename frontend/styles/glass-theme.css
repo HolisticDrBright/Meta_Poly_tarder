@@ -1,0 +1,527 @@
+/*
+ * LIQUID GLASS THEME — Polymarket Intelligence System
+ *
+ * Visual-only overlay. Import AFTER globals.css.
+ * No layout, logic, or data changes.
+ *
+ * Usage in layout.tsx:
+ *   import "../styles/glass-theme.css";
+ */
+
+/* ── CSS Variables ─────────────────────────────────────────── */
+
+:root {
+  --glass-bg: rgba(255, 255, 255, 0.04);
+  --glass-bg-hover: rgba(255, 255, 255, 0.06);
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-border-hover: rgba(255, 255, 255, 0.14);
+  --glass-blur: 24px;
+  --glass-radius: 16px;
+  --glass-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.06) inset,
+    0 8px 32px rgba(0, 0, 0, 0.4),
+    0 1px 0 rgba(255, 255, 255, 0.08) inset;
+  --glass-shadow-hover: 0 0 0 0.5px rgba(255, 255, 255, 0.10) inset,
+    0 12px 40px rgba(0, 0, 0, 0.5),
+    0 1px 0 rgba(255, 255, 255, 0.12) inset;
+
+  --text-primary: rgba(255, 255, 255, 0.90);
+  --text-secondary: rgba(255, 255, 255, 0.55);
+  --text-muted: rgba(255, 255, 255, 0.35);
+  --text-dim: rgba(255, 255, 255, 0.45);
+
+  --font-display: 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+/* ── Google Fonts ──────────────────────────────────────────── */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
+/* ── Background — animated mesh gradient ───────────────────── */
+
+body {
+  background: #080c14 !important;
+  background-image:
+    radial-gradient(ellipse 80% 50% at 20% 10%, rgba(99, 102, 241, 0.12) 0%, transparent 60%),
+    radial-gradient(ellipse 60% 40% at 80% 80%, rgba(20, 184, 166, 0.08) 0%, transparent 55%),
+    radial-gradient(ellipse 50% 60% at 50% 50%, rgba(139, 92, 246, 0.05) 0%, transparent 70%) !important;
+  font-family: var(--font-display) !important;
+}
+
+/* Animated mesh overlay */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  opacity: 0.6;
+  background:
+    radial-gradient(ellipse 70% 50% at var(--mesh-x1, 25%) var(--mesh-y1, 15%), rgba(99, 102, 241, 0.10) 0%, transparent 60%),
+    radial-gradient(ellipse 55% 45% at var(--mesh-x2, 75%) var(--mesh-y2, 75%), rgba(20, 184, 166, 0.07) 0%, transparent 55%);
+  animation: mesh-drift 30s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes mesh-drift {
+  0%, 100% {
+    --mesh-x1: 25%; --mesh-y1: 15%;
+    --mesh-x2: 75%; --mesh-y2: 75%;
+  }
+  33% {
+    --mesh-x1: 35%; --mesh-y1: 20%;
+    --mesh-x2: 65%; --mesh-y2: 70%;
+  }
+  66% {
+    --mesh-x1: 20%; --mesh-y1: 10%;
+    --mesh-x2: 80%; --mesh-y2: 80%;
+  }
+}
+
+/* Fallback for browsers that don't support @property */
+@supports not (background: paint(something)) {
+  body::before {
+    animation: mesh-drift-fallback 30s ease-in-out infinite;
+  }
+  @keyframes mesh-drift-fallback {
+    0%, 100% { transform: translate(0, 0); }
+    33% { transform: translate(10px, 5px); }
+    66% { transform: translate(-5px, -3px); }
+  }
+}
+
+/* ── Typography ────────────────────────────────────────────── */
+
+body, button, input, select, textarea {
+  font-family: var(--font-display) !important;
+}
+
+/* Panel titles */
+.react-grid-item h3,
+[class*="PanelHeader"] h3 {
+  font-family: var(--font-display) !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.12em !important;
+  text-transform: uppercase !important;
+  color: var(--text-dim) !important;
+}
+
+/* Monospace numbers */
+table td,
+[class*="font-mono"],
+[class*="font-bold"] {
+  font-family: var(--font-mono) !important;
+}
+
+/* Large stat numbers */
+.text-lg, .text-xl, .text-2xl {
+  font-family: var(--font-display) !important;
+  font-weight: 300 !important;
+  letter-spacing: -0.02em !important;
+}
+
+/* ── Liquid Glass Panels ───────────────────────────────────── */
+
+/* All panel cards */
+.react-grid-item > div,
+[class*="bg-card"] {
+  background: var(--glass-bg) !important;
+  backdrop-filter: blur(var(--glass-blur)) saturate(180%) !important;
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(180%) !important;
+  border: 1px solid var(--glass-border) !important;
+  border-radius: var(--glass-radius) !important;
+  box-shadow: var(--glass-shadow) !important;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
+}
+
+.react-grid-item > div:hover,
+[class*="bg-card"]:hover {
+  border-color: var(--glass-border-hover) !important;
+  box-shadow: var(--glass-shadow-hover) !important;
+}
+
+/* Panel header strip */
+.react-grid-item > div > div:first-child {
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 10px 14px;
+  border-radius: var(--glass-radius) var(--glass-radius) 0 0;
+  margin: -12px -12px 8px -12px;
+}
+
+/* ── Top Navigation Bar ────────────────────────────────────── */
+
+header,
+[class*="sticky"][class*="top-0"] {
+  background: rgba(8, 12, 20, 0.85) !important;
+  backdrop-filter: blur(20px) !important;
+  -webkit-backdrop-filter: blur(20px) !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07) !important;
+}
+
+/* Wordmark */
+header h1 {
+  font-family: var(--font-display) !important;
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.15em !important;
+  color: var(--text-primary) !important;
+}
+
+/* Status text */
+header span[class*="text-muted"] {
+  color: var(--text-muted) !important;
+  font-family: var(--font-display) !important;
+  font-size: 12px !important;
+  letter-spacing: 0.03em !important;
+}
+
+/* ── Status Indicator Dots ─────────────────────────────────── */
+
+.animate-pulse-glow,
+[class*="rounded-full"][class*="bg-poly-green"],
+[class*="rounded-full"][class*="bg-green"] {
+  width: 6px !important;
+  height: 6px !important;
+  background: rgb(52, 211, 153) !important;
+  box-shadow: 0 0 8px rgba(52, 211, 153, 0.7), 0 0 16px rgba(52, 211, 153, 0.3) !important;
+  animation: glass-pulse-glow 2s ease-in-out infinite !important;
+}
+
+@keyframes glass-pulse-glow {
+  0%, 100% { box-shadow: 0 0 8px rgba(52, 211, 153, 0.7); opacity: 1; }
+  50% { box-shadow: 0 0 14px rgba(52, 211, 153, 0.9); opacity: 0.8; }
+}
+
+/* ── Glass Badges ──────────────────────────────────────────── */
+
+/* Base badge reset */
+span[class*="inline-flex"][class*="rounded"][class*="border"] {
+  backdrop-filter: blur(8px) !important;
+  -webkit-backdrop-filter: blur(8px) !important;
+  border-radius: 6px !important;
+  font-family: var(--font-display) !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.06em !important;
+}
+
+/* YES badge */
+span[class*="bg-poly-green"][class*="border"] {
+  background: rgba(16, 185, 129, 0.12) !important;
+  border-color: rgba(52, 211, 153, 0.30) !important;
+  color: rgb(110, 231, 183) !important;
+  font-family: var(--font-mono) !important;
+}
+
+/* NO badge */
+span[class*="bg-poly-red"][class*="border"] {
+  background: rgba(239, 68, 68, 0.12) !important;
+  border-color: rgba(248, 113, 113, 0.30) !important;
+  color: rgb(252, 165, 165) !important;
+  font-family: var(--font-mono) !important;
+}
+
+/* PAPER MODE pill */
+span[class*="bg-poly-amber"][class*="border"] {
+  background: rgba(251, 191, 36, 0.10) !important;
+  border-color: rgba(251, 191, 36, 0.25) !important;
+  color: rgb(253, 224, 71) !important;
+  backdrop-filter: blur(8px) !important;
+}
+
+/* Legendary tier */
+span[class*="bg-yellow"][class*="border"] {
+  background: rgba(250, 204, 21, 0.12) !important;
+  border-color: rgba(250, 204, 21, 0.30) !important;
+  color: rgb(253, 224, 71) !important;
+}
+
+/* Elite tier */
+span[class*="bg-poly-purple"][class*="border"] {
+  background: rgba(99, 102, 241, 0.15) !important;
+  border-color: rgba(129, 140, 248, 0.35) !important;
+  color: rgb(165, 180, 252) !important;
+}
+
+/* Pro tier */
+span[class*="bg-poly-blue"][class*="border"] {
+  background: rgba(20, 184, 166, 0.12) !important;
+  border-color: rgba(45, 212, 191, 0.30) !important;
+  color: rgb(94, 234, 212) !important;
+}
+
+/* Strong signal */
+span[class*="text-poly-green"][class*="rounded"] {
+  background: rgba(16, 185, 129, 0.12) !important;
+  border-color: rgba(52, 211, 153, 0.35) !important;
+  color: rgb(110, 231, 183) !important;
+}
+
+/* Moderate signal */
+span[class*="text-poly-amber"][class*="rounded"] {
+  background: rgba(245, 158, 11, 0.12) !important;
+  border-color: rgba(251, 191, 36, 0.30) !important;
+  color: rgb(252, 211, 77) !important;
+}
+
+/* Confluence badge */
+span[class*="CONFLUENCE"] {
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.18), rgba(139, 92, 246, 0.18)) !important;
+  border-color: rgba(167, 139, 250, 0.35) !important;
+  color: rgb(196, 181, 253) !important;
+}
+
+/* ── Buttons ───────────────────────────────────────────────── */
+
+/* COPY button */
+button[class*="bg-poly-green"] {
+  background: rgba(16, 185, 129, 0.15) !important;
+  border: 1px solid rgba(52, 211, 153, 0.40) !important;
+  color: rgb(110, 231, 183) !important;
+  backdrop-filter: blur(8px) !important;
+  border-radius: 8px !important;
+  transition: all 0.15s ease !important;
+}
+button[class*="bg-poly-green"]:hover {
+  background: rgba(16, 185, 129, 0.25) !important;
+}
+
+/* SKIP / CLOSE button */
+button[class*="bg-poly-red"] {
+  background: rgba(255, 255, 255, 0.05) !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  color: rgba(255, 255, 255, 0.45) !important;
+  border-radius: 8px !important;
+  transition: all 0.15s ease !important;
+}
+button[class*="bg-poly-red"]:hover {
+  background: rgba(239, 68, 68, 0.15) !important;
+  border-color: rgba(248, 113, 113, 0.30) !important;
+  color: rgb(252, 165, 165) !important;
+}
+
+/* RUN DEBATE button */
+button[class*="bg-poly-purple"] {
+  background: rgba(99, 102, 241, 0.15) !important;
+  border: 1px solid rgba(129, 140, 248, 0.35) !important;
+  backdrop-filter: blur(8px) !important;
+  border-radius: 8px !important;
+  transition: all 0.15s ease !important;
+}
+button[class*="bg-poly-purple"]:hover {
+  background: rgba(99, 102, 241, 0.25) !important;
+}
+
+/* Filter/timeframe buttons */
+button[class*="bg-accent"] {
+  background: rgba(99, 102, 241, 0.20) !important;
+  border-color: rgba(129, 140, 248, 0.40) !important;
+}
+
+button[class*="bg-muted"] {
+  background: rgba(255, 255, 255, 0.04) !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+/* AUTO/MANUAL toggle */
+button[class*="rounded"][class*="border"][class*="text-\\[10px\\]"] {
+  border-radius: 20px !important;
+  backdrop-filter: blur(8px) !important;
+}
+
+/* ── Data Tables ───────────────────────────────────────────── */
+
+/* Table header */
+thead tr,
+table thead {
+  background: rgba(255, 255, 255, 0.03) !important;
+}
+
+thead th {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07) !important;
+  color: var(--text-muted) !important;
+  font-family: var(--font-display) !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.08em !important;
+  text-transform: uppercase !important;
+}
+
+/* Table rows */
+tbody tr {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04) !important;
+  transition: background 0.1s ease !important;
+}
+
+tbody tr:hover {
+  background: rgba(255, 255, 255, 0.04) !important;
+}
+
+/* Table numbers */
+tbody td {
+  font-family: var(--font-mono) !important;
+  font-size: 12px !important;
+}
+
+/* High KL row highlight (red) */
+tr[class*="bg-poly-red"] {
+  background: rgba(239, 68, 68, 0.06) !important;
+  border-left: 2px solid rgba(239, 68, 68, 0.50) !important;
+}
+
+/* Medium KL row (amber) */
+tr[class*="bg-poly-amber"] {
+  background: rgba(245, 158, 11, 0.05) !important;
+  border-left: 2px solid rgba(245, 158, 11, 0.40) !important;
+}
+
+/* ── SMI Gauge ─────────────────────────────────────────────── */
+
+[class*="bg-gradient-to-r"] {
+  background: linear-gradient(90deg,
+    rgba(239, 68, 68, 0.8),
+    rgba(245, 158, 11, 0.8),
+    rgba(52, 211, 153, 0.8)) !important;
+  border-radius: 4px !important;
+}
+
+/* Gauge track */
+[class*="bg-muted"][class*="rounded-full"][class*="h-2"],
+[class*="bg-muted"][class*="rounded-full"][class*="h-1"] {
+  background: rgba(255, 255, 255, 0.06) !important;
+}
+
+/* ── Inner stat cards (Win Rate, ROI, etc.) ────────────────── */
+
+[class*="bg-muted/30"][class*="rounded"][class*="text-center"] {
+  background: rgba(255, 255, 255, 0.04) !important;
+  border: 1px solid rgba(255, 255, 255, 0.06) !important;
+  border-radius: 10px !important;
+  backdrop-filter: blur(12px) !important;
+}
+
+/* ── Kelly Calculator math display ─────────────────────────── */
+
+[class*="bg-muted/30"][class*="font-mono"] {
+  background: rgba(255, 255, 255, 0.03) !important;
+  border: 1px solid rgba(255, 255, 255, 0.07) !important;
+  border-radius: 12px !important;
+  backdrop-filter: blur(16px) !important;
+}
+
+/* ── Arb opportunity flash ─────────────────────────────────── */
+
+[class*="animate-pulse-glow"][class*="bg-poly-green"] {
+  background: rgba(16, 185, 129, 0.08) !important;
+  border: 1px solid rgba(52, 211, 153, 0.30) !important;
+  border-radius: 10px !important;
+  backdrop-filter: blur(8px) !important;
+}
+
+/* ── AI Debate Floor agent cards ───────────────────────────── */
+
+[class*="bg-muted/20"][class*="border-l-2"] {
+  background: rgba(255, 255, 255, 0.03) !important;
+  border-radius: 8px !important;
+  backdrop-filter: blur(8px) !important;
+}
+
+/* Final verdict card */
+[class*="bg-poly-purple/10"] {
+  background: rgba(99, 102, 241, 0.08) !important;
+  border: 1px solid rgba(129, 140, 248, 0.25) !important;
+  border-radius: 12px !important;
+  backdrop-filter: blur(12px) !important;
+}
+
+/* ── Copy trade queue items ────────────────────────────────── */
+
+[class*="bg-muted/20"][class*="border-border"] {
+  background: rgba(255, 255, 255, 0.03) !important;
+  border: 1px solid rgba(255, 255, 255, 0.07) !important;
+  border-radius: 10px !important;
+  backdrop-filter: blur(8px) !important;
+}
+
+/* ── Scrollbars ────────────────────────────────────────────── */
+
+::-webkit-scrollbar { width: 4px !important; height: 4px !important; }
+::-webkit-scrollbar-track { background: transparent !important; }
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12) !important;
+  border-radius: 2px !important;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.22) !important;
+}
+
+/* ── Loading shimmer ───────────────────────────────────────── */
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.shimmer-row {
+  background: linear-gradient(90deg,
+    rgba(255, 255, 255, 0.04) 25%,
+    rgba(255, 255, 255, 0.08) 50%,
+    rgba(255, 255, 255, 0.04) 75%) !important;
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: 4px;
+  height: 14px;
+  margin: 8px 0;
+}
+
+/* ── Range inputs (Kelly Calc sliders) ─────────────────────── */
+
+input[type="range"] {
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  height: 4px !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+  border-radius: 2px !important;
+  outline: none !important;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none !important;
+  width: 14px !important;
+  height: 14px !important;
+  border-radius: 50% !important;
+  background: white !important;
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.4) !important;
+  cursor: pointer !important;
+}
+
+/* ── React Grid Layout overrides ───────────────────────────── */
+
+.react-grid-placeholder {
+  background: rgba(99, 102, 241, 0.12) !important;
+  border: 1px solid rgba(99, 102, 241, 0.30) !important;
+  border-radius: var(--glass-radius) !important;
+  backdrop-filter: blur(8px) !important;
+}
+
+.react-grid-item.react-draggable-dragging > div {
+  box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.40) inset,
+    0 20px 60px rgba(0, 0, 0, 0.6) !important;
+}
+
+/* ── Recharts tooltip override ─────────────────────────────── */
+
+.recharts-default-tooltip {
+  background: rgba(8, 12, 20, 0.90) !important;
+  backdrop-filter: blur(16px) !important;
+  border: 1px solid rgba(255, 255, 255, 0.10) !important;
+  border-radius: 10px !important;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5) !important;
+}
+
+/* ── World map panel SVG ───────────────────────────────────── */
+
+svg[viewBox="0 0 100 100"] {
+  border-radius: 10px;
+}

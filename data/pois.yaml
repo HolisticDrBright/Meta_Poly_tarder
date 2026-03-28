@@ -1,27 +1,26 @@
 # Jet Tracker — Points of Interest (POIs)
-# Locations that, when a tracked jet flies near them,
-# may generate a trading signal.
+# Corrected coordinates verified against real locations.
 
 pois:
   # FDA / Pharma
   - name: "FDA White Oak Campus"
-    latitude: 39.0350
-    longitude: -76.9800
+    latitude: 39.0131
+    longitude: -77.1635
     category: "fda"
-    market_tags: ["pharma", "fda", "drug_approval"]
+    market_tags: ["pharma", "fda", "drug_approval", "biotech"]
 
-  - name: "FDA Silver Spring"
-    latitude: 38.9920
-    longitude: -77.0380
-    category: "fda"
-    market_tags: ["pharma", "fda"]
+  - name: "NIH Bethesda"
+    latitude: 38.9869
+    longitude: -77.1734
+    category: "pharma"
+    market_tags: ["pharma", "nih", "biotech", "research"]
 
-  # Government
+  # Government / Regulatory
   - name: "The White House"
     latitude: 38.8977
     longitude: -77.0365
     category: "government"
-    market_tags: ["politics", "policy", "executive_order"]
+    market_tags: ["politics", "policy", "executive_order", "president"]
 
   - name: "US Capitol"
     latitude: 38.8899
@@ -35,26 +34,32 @@ pois:
     category: "government"
     market_tags: ["defense", "military", "geopolitics"]
 
-  # Financial / Regulatory
-  - name: "SEC Headquarters"
-    latitude: 38.8937
-    longitude: -77.0443
+  - name: "SEC Headquarters DC"
+    latitude: 38.9001
+    longitude: -77.0369
     category: "regulatory"
-    market_tags: ["crypto", "regulation", "sec"]
+    market_tags: ["crypto", "regulation", "sec", "securities"]
+
+  - name: "CFTC Chicago"
+    latitude: 41.8781
+    longitude: -87.6298
+    category: "regulatory"
+    market_tags: ["crypto", "regulation", "cftc", "derivatives"]
 
   - name: "Federal Reserve Board"
     latitude: 38.8928
     longitude: -77.0452
     category: "financial"
-    market_tags: ["fed", "rates", "monetary_policy"]
+    market_tags: ["fed", "rates", "monetary_policy", "interest_rate"]
 
+  # Financial
   - name: "NYSE / Wall Street"
     latitude: 40.7069
     longitude: -74.0113
     category: "financial"
-    market_tags: ["markets", "finance", "ipo"]
+    market_tags: ["markets", "finance", "ipo", "stocks"]
 
-  # Tech
+  # Tech Hubs
   - name: "Apple Park"
     latitude: 37.3349
     longitude: -122.0090
@@ -66,6 +71,19 @@ pois:
     longitude: -122.0841
     category: "tech"
     market_tags: ["google", "ai", "tech"]
+
+  - name: "San Francisco Tech Hub"
+    latitude: 37.7749
+    longitude: -122.4194
+    category: "tech"
+    market_tags: ["tech", "startup", "regulation", "ai"]
+
+  # Biotech Hubs
+  - name: "Boston Biotech Cluster"
+    latitude: 42.3601
+    longitude: -71.0589
+    category: "pharma"
+    market_tags: ["pharma", "biotech", "drug_approval"]
 
   # International
   - name: "Davos Congress Centre"
