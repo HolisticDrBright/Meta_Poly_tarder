@@ -11,9 +11,17 @@ export const WS_URL =
   process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000/ws/live";
 
 export async function apiFetch<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_URL}${path}`);
-  if (!res.ok) throw new Error(`API error: ${res.status}`);
-  return res.json();
+  try {
+    const res = await fetch(`${API_URL}${path}`, {
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) throw new Error(`API error: ${res.status}`);
+    return res.json();
+  } catch (e) {
+    // Return empty/default data instead of crashing the page
+    console.warn(`API fetch failed for ${path}:`, e);
+    throw e;
+  }
 }
 
 export function formatUSD(n: number): string {

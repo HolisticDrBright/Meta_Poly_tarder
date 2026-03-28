@@ -11,6 +11,7 @@ async function request<T>(
 ): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
     headers: { "Content-Type": "application/json" },
+    signal: AbortSignal.timeout(15000),
     ...options,
   });
   if (!res.ok) {
