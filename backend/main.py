@@ -90,6 +90,7 @@ app = FastAPI(
     title="Polymarket Intelligence System",
     description="Quantitative trading engine + 13-panel dashboard backend",
     version="1.0.0",
+    redirect_slashes=False,
     lifespan=lifespan,
 )
 

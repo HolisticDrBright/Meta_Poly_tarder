@@ -25,7 +25,7 @@ async function request<T>(
 
 export function fetchMarkets(limit = 50, minLiquidity = 0) {
   return request<any[]>(
-    `/api/markets/?limit=${limit}&min_liquidity=${minLiquidity}`
+    `/api/markets?limit=${limit}&min_liquidity=${minLiquidity}`
   );
 }
 
@@ -58,7 +58,7 @@ export function runDebate(
 
 export function fetchSignals(limit = 50) {
   return request<{ signals: any[]; count: number }>(
-    `/api/signals/?limit=${limit}`
+    `/api/signals?limit=${limit}`
   );
 }
 

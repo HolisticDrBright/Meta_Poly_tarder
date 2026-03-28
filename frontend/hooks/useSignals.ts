@@ -12,7 +12,7 @@ export function useMarkets(limit = 50, minLiquidity = 0) {
     queryKey: ["markets", limit, minLiquidity],
     queryFn: async () => {
       const data = await apiFetch<Market[]>(
-        `/api/markets/?limit=${limit}&min_liquidity=${minLiquidity}`
+        `/api/markets?limit=${limit}&min_liquidity=${minLiquidity}`
       );
       setMarkets(data);
       return data;
@@ -47,7 +47,7 @@ export function useSignals() {
     queryKey: ["signals"],
     queryFn: async () => {
       const data = await apiFetch<{ signals: any[]; count: number }>(
-        "/api/signals/"
+        "/api/signals"
       );
       setSignals(data.signals);
       return data;
