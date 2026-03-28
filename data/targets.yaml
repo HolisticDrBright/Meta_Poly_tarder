@@ -1,0 +1,32 @@
+# Jet Tracker — Target Aircraft
+# Each entry maps a person/entity to their known aircraft.
+#
+# Fields:
+#   name:       Display name
+#   role:       Title/role for context
+#   tails:      List of tail numbers
+#   icao24:     List of ICAO24 hex codes (for ADS-B tracking)
+#   tags:       Market categories this person is relevant to
+
+targets:
+  - name: "Placeholder Target A"
+    role: "Pharma CEO"
+    tails: ["N000AA"]
+    icao24: ["a00000"]
+    tags: ["pharma", "fda", "biotech"]
+
+  - name: "Placeholder Target B"
+    role: "Tech Executive"
+    tails: ["N000BB"]
+    icao24: ["b00000"]
+    tags: ["tech", "regulation"]
+
+  - name: "Placeholder Target C"
+    role: "Government Official"
+    tails: ["N000CC"]
+    icao24: ["c00000"]
+    tags: ["politics", "policy", "regulation"]
+
+  # Add real targets here with actual tail numbers and ICAO24 codes.
+  # Sources: FAA releasable aircraft database, public flight records.
+  # IMPORTANT: Only track publicly available ADS-B data.

@@ -1,0 +1,81 @@
+# Jet Tracker — Points of Interest (POIs)
+# Locations that, when a tracked jet flies near them,
+# may generate a trading signal.
+
+pois:
+  # FDA / Pharma
+  - name: "FDA White Oak Campus"
+    latitude: 39.0350
+    longitude: -76.9800
+    category: "fda"
+    market_tags: ["pharma", "fda", "drug_approval"]
+
+  - name: "FDA Silver Spring"
+    latitude: 38.9920
+    longitude: -77.0380
+    category: "fda"
+    market_tags: ["pharma", "fda"]
+
+  # Government
+  - name: "The White House"
+    latitude: 38.8977
+    longitude: -77.0365
+    category: "government"
+    market_tags: ["politics", "policy", "executive_order"]
+
+  - name: "US Capitol"
+    latitude: 38.8899
+    longitude: -77.0091
+    category: "government"
+    market_tags: ["politics", "legislation", "congress"]
+
+  - name: "Pentagon"
+    latitude: 38.8719
+    longitude: -77.0563
+    category: "government"
+    market_tags: ["defense", "military", "geopolitics"]
+
+  # Financial / Regulatory
+  - name: "SEC Headquarters"
+    latitude: 38.8937
+    longitude: -77.0443
+    category: "regulatory"
+    market_tags: ["crypto", "regulation", "sec"]
+
+  - name: "Federal Reserve Board"
+    latitude: 38.8928
+    longitude: -77.0452
+    category: "financial"
+    market_tags: ["fed", "rates", "monetary_policy"]
+
+  - name: "NYSE / Wall Street"
+    latitude: 40.7069
+    longitude: -74.0113
+    category: "financial"
+    market_tags: ["markets", "finance", "ipo"]
+
+  # Tech
+  - name: "Apple Park"
+    latitude: 37.3349
+    longitude: -122.0090
+    category: "tech"
+    market_tags: ["apple", "tech", "product_launch"]
+
+  - name: "Googleplex"
+    latitude: 37.4220
+    longitude: -122.0841
+    category: "tech"
+    market_tags: ["google", "ai", "tech"]
+
+  # International
+  - name: "Davos Congress Centre"
+    latitude: 46.8027
+    longitude: 9.8360
+    category: "international"
+    market_tags: ["geopolitics", "economics", "wef"]
+
+  - name: "UN Headquarters NYC"
+    latitude: 40.7489
+    longitude: -73.9680
+    category: "international"
+    market_tags: ["geopolitics", "un", "diplomacy"]

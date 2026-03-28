@@ -1,0 +1,7 @@
+{
+  "_comment": "FDA PDUFA (Prescription Drug User Fee Act) target dates. Update monthly from FDA calendar.",
+  "_format": "drug_name: ISO date string of PDUFA target date",
+  "example_drug_a": "2026-04-15",
+  "example_drug_b": "2026-05-01",
+  "example_drug_c": "2026-06-30"
+}
