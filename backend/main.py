@@ -32,14 +32,33 @@ sqlite = SQLiteState()
 ws_connections: set[WebSocket] = set()
 
 
+trading_scheduler = None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown hooks."""
+    global trading_scheduler
     logger.info("Starting Polymarket Intelligence System")
     logger.info(f"Paper trading: {settings.trading.paper_trading}")
     duckdb.connect()
     sqlite.connect()
+
+    # Start the trading scheduler
+    try:
+        from backend.scheduler import TradingScheduler
+
+        trading_scheduler = TradingScheduler()
+        trading_scheduler.start()
+        logger.info("Trading scheduler started")
+    except Exception as e:
+        logger.warning(f"Scheduler failed to start (non-fatal): {e}")
+
     yield
+
+    # Shutdown
+    if trading_scheduler:
+        await trading_scheduler.stop()
     await gamma_client.close()
     duckdb.close()
     sqlite.close()

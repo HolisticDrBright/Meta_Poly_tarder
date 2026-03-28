@@ -26,6 +26,9 @@ openai>=1.50.0
 # Scheduling
 apscheduler>=3.10.0
 
+# Polymarket CLOB (live trading — optional for paper mode)
+py-clob-client>=0.0.1
+
 # Type checking / dev
 mypy>=1.7.0
 pytest>=7.4.0
