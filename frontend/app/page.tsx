@@ -1,11 +1,11 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { Responsive, WidthProvider, Layout } from "react-grid-layout";
 import "react-grid-layout/css/styles.css";
 import "react-resizable/css/styles.css";
 
-import { useMarkets, usePortfolioStats } from "@/hooks/useSignals";
+import { useMarkets, usePortfolioStats, usePositions, useSignals } from "@/hooks/useSignals";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { usePortfolioStore } from "@/stores/portfolioStore";
 import { useMarketStore } from "@/stores/marketStore";
@@ -82,13 +82,31 @@ const PANEL_MAP: Record<string, React.FC> = {
 
 export default function DashboardPage() {
   const [layouts, setLayouts] = useState(DEFAULT_LAYOUTS);
+  const [hydrated, setHydrated] = useState(false);
   const stats = usePortfolioStore((s) => s.stats);
   const positions = usePortfolioStore((s) => s.positions);
 
   // Data hooks — fetch on mount and auto-refresh
-  useMarkets(50);
-  usePortfolioStats();
+  const { isLoading: marketsLoading } = useMarkets(50);
+  const { isLoading: statsLoading } = usePortfolioStats();
+  usePositions();
+  useSignals();
   useWebSocket();
+
+  // Eager hydration — populate stores immediately on mount
+  useEffect(() => {
+    const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+    Promise.all([
+      fetch(`${API}/api/portfolio/stats`).then((r) => r.ok ? r.json() : null).catch(() => null),
+      fetch(`${API}/api/portfolio/positions`).then((r) => r.ok ? r.json() : null).catch(() => null),
+      fetch(`${API}/api/markets?limit=50`).then((r) => r.ok ? r.json() : null).catch(() => null),
+    ]).then(([statsData, posData, marketsData]) => {
+      if (statsData) usePortfolioStore.setState({ stats: statsData });
+      if (posData?.positions) usePortfolioStore.setState({ positions: posData.positions });
+      if (marketsData && Array.isArray(marketsData)) useMarketStore.setState({ markets: marketsData });
+      setHydrated(true);
+    });
+  }, []);
 
   const totalBalance = stats.balance + (stats.unrealized_pnl || 0);
   const totalROI = stats.balance > 0 ? ((totalBalance - 10000) / 10000) * 100 : 0;

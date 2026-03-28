@@ -115,8 +115,10 @@ export default function EntropyHeatmap() {
           </tbody>
         </table>
         {scored.length === 0 && (
-          <div className="text-center text-muted-foreground text-sm py-8">
-            Loading markets...
+          <div className="py-4 space-y-2">
+            {[...Array(8)].map((_, i) => (
+              <div key={i} className="shimmer-row" style={{ width: `${85 - i * 5}%` }} />
+            ))}
           </div>
         )}
       </div>
