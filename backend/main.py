@@ -136,8 +136,11 @@ async def websocket_endpoint(ws: WebSocket):
 
 # ── health check ────────────────────────────────────────────────────
 @app.get("/health")
+@app.get("/api/health")
 async def health():
-    return system_state.get_stats()
+    stats = system_state.get_stats()
+    stats["status"] = "ok"
+    return stats
 
 
 # ── kill switch ─────────────────────────────────────────────────────

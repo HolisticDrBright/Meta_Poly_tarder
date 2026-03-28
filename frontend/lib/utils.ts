@@ -5,10 +5,22 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-export const API_URL =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-export const WS_URL =
-  process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000/ws/live";
+// Runtime URL detection: works on VPS, localhost, or any host.
+// NEXT_PUBLIC_API_URL is baked at build time — if not set, detect from browser.
+function getApiUrl(): string {
+  if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
+  if (typeof window !== "undefined") return `http://${window.location.hostname}:8000`;
+  return "http://localhost:8000";
+}
+
+function getWsUrl(): string {
+  if (process.env.NEXT_PUBLIC_WS_URL) return process.env.NEXT_PUBLIC_WS_URL;
+  if (typeof window !== "undefined") return `ws://${window.location.hostname}:8000/ws/live`;
+  return "ws://localhost:8000/ws/live";
+}
+
+export const API_URL = getApiUrl();
+export const WS_URL = getWsUrl();
 
 export async function apiFetch<T>(path: string): Promise<T> {
   try {

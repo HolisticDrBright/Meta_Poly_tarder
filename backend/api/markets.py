@@ -24,7 +24,7 @@ class DebateRequest(BaseModel):
     context: str = ""
 
 
-@router.get("/")
+@router.get("")
 async def list_markets(
     limit: int = Query(50, ge=1, le=200),
     min_liquidity: float = Query(0, ge=0),

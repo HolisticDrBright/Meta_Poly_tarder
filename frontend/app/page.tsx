@@ -94,13 +94,33 @@ export default function DashboardPage() {
   useWebSocket();
 
   // Eager hydration — populate stores immediately on mount
+  // Uses runtime detection: NEXT_PUBLIC_API_URL baked at build, or
+  // same-origin host with backend port, or localhost fallback.
   useEffect(() => {
-    const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+    const buildTimeUrl = process.env.NEXT_PUBLIC_API_URL;
+    const runtimeUrl = typeof window !== "undefined"
+      ? `http://${window.location.hostname}:8000`
+      : "http://localhost:8000";
+    const API = buildTimeUrl || runtimeUrl;
+
+    console.log("[Hydration] Fetching from:", API);
+
     Promise.all([
-      fetch(`${API}/api/portfolio/stats`).then((r) => r.ok ? r.json() : null).catch(() => null),
-      fetch(`${API}/api/portfolio/positions`).then((r) => r.ok ? r.json() : null).catch(() => null),
-      fetch(`${API}/api/markets?limit=50`).then((r) => r.ok ? r.json() : null).catch(() => null),
+      fetch(`${API}/api/portfolio/stats`, { signal: AbortSignal.timeout(8000) })
+        .then((r) => { console.log("[Hydration] stats:", r.status); return r.ok ? r.json() : null; })
+        .catch((e) => { console.warn("[Hydration] stats failed:", e); return null; }),
+      fetch(`${API}/api/portfolio/positions`, { signal: AbortSignal.timeout(8000) })
+        .then((r) => { console.log("[Hydration] positions:", r.status); return r.ok ? r.json() : null; })
+        .catch((e) => { console.warn("[Hydration] positions failed:", e); return null; }),
+      fetch(`${API}/api/markets?limit=50`, { signal: AbortSignal.timeout(8000) })
+        .then((r) => { console.log("[Hydration] markets:", r.status); return r.ok ? r.json() : null; })
+        .catch((e) => { console.warn("[Hydration] markets failed:", e); return null; }),
     ]).then(([statsData, posData, marketsData]) => {
+      console.log("[Hydration] Results:", {
+        stats: !!statsData,
+        positions: !!posData?.positions,
+        markets: Array.isArray(marketsData) ? marketsData.length : "not array",
+      });
       if (statsData) usePortfolioStore.setState({ stats: statsData });
       if (posData?.positions) usePortfolioStore.setState({ positions: posData.positions });
       if (marketsData && Array.isArray(marketsData)) useMarketStore.setState({ markets: marketsData });

@@ -11,7 +11,7 @@ from backend.state import system_state
 router = APIRouter()
 
 
-@router.get("/")
+@router.get("")
 async def list_signals(limit: int = Query(50, ge=1, le=200)):
     """Get recent trading signals from all strategies."""
     signals = system_state.recent_signals[:limit]
