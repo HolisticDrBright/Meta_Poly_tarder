@@ -219,3 +219,79 @@ async def run_debate(market_id: str, req: DebateRequest):
     except Exception as e:
         logger.error(f"Debate failed: {e}")
         raise HTTPException(500, f"Debate failed: {str(e)}")
+
+
+@router.get("/{market_id}/orderbook")
+async def get_orderbook(market_id: str):
+    """
+    Fetch live L2 order book from the CLOB REST API.
+
+    Returns bids, asks, mid_price, spread, and depth summary.
+    """
+    from backend.data_layer.clob_ws import CLOBRestClient
+
+    clob = CLOBRestClient()
+    try:
+        # Use the market_id as token_id (condition_id may be needed for some markets)
+        cached = system_state.get_market(market_id)
+        token_id = cached.condition_id if cached else market_id
+
+        book_data = await clob.get_order_book(token_id)
+
+        bids = book_data.get("bids", [])
+        asks = book_data.get("asks", [])
+
+        # Parse into [[price, size], ...] format
+        parsed_bids = [
+            [float(b.get("price", b[0]) if isinstance(b, dict) else b[0]),
+             float(b.get("size", b[1]) if isinstance(b, dict) else b[1])]
+            for b in bids
+        ] if bids else []
+
+        parsed_asks = [
+            [float(a.get("price", a[0]) if isinstance(a, dict) else a[0]),
+             float(a.get("size", a[1]) if isinstance(a, dict) else a[1])]
+            for a in asks
+        ] if asks else []
+
+        # Sort
+        parsed_bids.sort(key=lambda x: x[0], reverse=True)
+        parsed_asks.sort(key=lambda x: x[0])
+
+        best_bid = parsed_bids[0][0] if parsed_bids else 0
+        best_ask = parsed_asks[0][0] if parsed_asks else 1
+        mid = (best_bid + best_ask) / 2 if (parsed_bids and parsed_asks) else 0.5
+        spread = best_ask - best_bid if (parsed_bids and parsed_asks) else 0
+
+        # Depth: sum of top 10 levels
+        bid_depth = sum(b[1] for b in parsed_bids[:10])
+        ask_depth = sum(a[1] for a in parsed_asks[:10])
+
+        return {
+            "market_id": market_id,
+            "bids": parsed_bids[:20],
+            "asks": parsed_asks[:20],
+            "mid_price": mid,
+            "spread": spread,
+            "best_bid": best_bid,
+            "best_ask": best_ask,
+            "depth_10": {"bid": bid_depth, "ask": ask_depth},
+        }
+    except Exception as e:
+        logger.error(f"Order book fetch failed: {e}")
+        # Fallback: return from cached state if available
+        if cached:
+            return {
+                "market_id": market_id,
+                "bids": [],
+                "asks": [],
+                "mid_price": cached.mid_price,
+                "spread": cached.spread,
+                "best_bid": cached.best_bid,
+                "best_ask": cached.best_ask,
+                "depth_10": {"bid": 0, "ask": 0},
+                "note": "Fallback from cached data — CLOB API unreachable",
+            }
+        raise HTTPException(503, f"Order book unavailable: {str(e)}")
+    finally:
+        await clob.close()

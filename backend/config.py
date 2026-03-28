@@ -35,6 +35,7 @@ def _int(val: str | None, default: int = 0) -> int:
 class TradingConfig:
     private_key: str = os.getenv("POLYMARKET_PRIVATE_KEY", "")
     wallet_address: str = os.getenv("POLYMARKET_WALLET_ADDRESS", "")
+    relayer_api_key: str = os.getenv("POLYMARKET_RELAYER_API_KEY", "")
     signature_type: int = _int(os.getenv("SIGNATURE_TYPE"), 0)
     paper_trading: bool = _bool(os.getenv("PAPER_TRADING"), True)
 
