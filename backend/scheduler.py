@@ -103,8 +103,12 @@ class TradingScheduler:
         self.duckdb = DuckDBStorage()
         self.sqlite = SQLiteState()
 
-        # State
-        self._markets: list[MarketState] = []
+        # Shared state (accessible by API routes)
+        from backend.state import system_state
+        self.state = system_state
+        self.state.paper_trading = settings.trading.paper_trading
+
+        # Local accumulator
         self._all_intents: list[OrderIntent] = []
 
     def _gamma_to_market_state(self, gm) -> MarketState:
@@ -133,34 +137,51 @@ class TradingScheduler:
         """Fetch latest market data from Gamma API."""
         try:
             gamma_markets = await self.gamma.get_active_markets(min_liquidity=10000, limit=100)
-            self._markets = [self._gamma_to_market_state(gm) for gm in gamma_markets]
-            logger.debug(f"Refreshed {len(self._markets)} markets")
+            markets = [self._gamma_to_market_state(gm) for gm in gamma_markets]
+            self.state.update_markets(markets)
+            logger.debug(f"Refreshed {len(markets)} markets")
+
+            # Broadcast price updates
+            for m in markets[:20]:
+                await self.state.broadcast("price_update", {
+                    "market_id": m.market_id,
+                    "yes_price": m.yes_price,
+                    "no_price": m.no_price,
+                })
         except Exception as e:
             logger.error(f"Market refresh failed: {e}")
 
     async def run_entropy_screener(self) -> None:
         """Run entropy screener on all markets."""
-        if not settings.strategies.entropy or not self._markets:
+        if not settings.strategies.entropy or not self.state.markets:
             return
         try:
-            intents = await self.entropy.evaluate_batch(self._markets)
+            intents = await self.entropy.evaluate_batch(self.state.markets)
             self._all_intents.extend(intents)
+            for intent in intents:
+                self.state.add_signal(intent)
             if intents:
                 logger.info(f"Entropy screener: {len(intents)} signals")
                 for intent in intents[:3]:
                     await self.telegram.signal_alert(
                         "entropy", intent.question, intent.reason
                     )
+                    await self.state.broadcast("signal", {
+                        "strategy": "entropy", "market_id": intent.market_id,
+                        "side": intent.side.value, "confidence": intent.confidence,
+                    })
         except Exception as e:
             logger.error(f"Entropy screener failed: {e}")
 
     async def run_arb_scanner(self) -> None:
         """Scan for YES+NO arbitrage opportunities."""
-        if not settings.strategies.arb or not self._markets:
+        if not settings.strategies.arb or not self.state.markets:
             return
         try:
-            intents = await self.arb.evaluate_batch(self._markets)
+            intents = await self.arb.evaluate_batch(self.state.markets)
             self._all_intents.extend(intents)
+            for intent in intents:
+                self.state.add_signal(intent)
             if intents:
                 logger.info(f"Arb scanner: {len(intents)} opportunities")
                 for intent in intents[:2]:
@@ -172,20 +193,20 @@ class TradingScheduler:
 
     async def run_avellaneda_mm(self) -> None:
         """Update A-S market maker quotes."""
-        if not settings.strategies.avellaneda or not self._markets:
+        if not settings.strategies.avellaneda or not self.state.markets:
             return
         try:
-            intents = await self.avellaneda.evaluate_batch(self._markets)
+            intents = await self.avellaneda.evaluate_batch(self.state.markets)
             self._all_intents.extend(intents)
         except Exception as e:
             logger.error(f"A-S MM failed: {e}")
 
     async def run_theta_harvester(self) -> None:
         """Run theta decay harvester."""
-        if not settings.strategies.theta or not self._markets:
+        if not settings.strategies.theta or not self.state.markets:
             return
         try:
-            intents = await self.theta.evaluate_batch(self._markets)
+            intents = await self.theta.evaluate_batch(self.state.markets)
             self._all_intents.extend(intents)
             if intents:
                 logger.info(f"Theta harvester: {len(intents)} signals")

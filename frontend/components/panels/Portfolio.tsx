@@ -4,6 +4,7 @@ import { PanelCard, PanelHeader } from "../shared/AlertFeed";
 import { StrategyBadge, SideBadge } from "../shared/SignalBadge";
 import { usePortfolioStore, type Position } from "@/stores/portfolioStore";
 import { cn, formatUSD, hoursUntil } from "@/lib/utils";
+import { closePosition } from "@/lib/api";
 
 export default function Portfolio() {
   const positions = usePortfolioStore((s) => s.positions);
@@ -82,7 +83,16 @@ export default function Portfolio() {
                   {p.hours_to_close !== null ? `${p.hours_to_close.toFixed(0)}h` : "—"}
                 </td>
                 <td className="py-1">
-                  <button className="px-1.5 py-0.5 rounded text-[9px] font-medium bg-poly-red/20 text-poly-red border border-poly-red/40 hover:bg-poly-red/30">
+                  <button
+                    onClick={async () => {
+                      try {
+                        await closePosition(p.market_id);
+                      } catch (e) {
+                        console.error("Close failed:", e);
+                      }
+                    }}
+                    className="px-1.5 py-0.5 rounded text-[9px] font-medium bg-poly-red/20 text-poly-red border border-poly-red/40 hover:bg-poly-red/30"
+                  >
                     CLOSE
                   </button>
                 </td>

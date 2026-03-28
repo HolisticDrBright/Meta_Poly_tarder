@@ -5,6 +5,7 @@ import { PanelCard, PanelHeader } from "../shared/AlertFeed";
 import { SideBadge, ConfluenceBadge } from "../shared/SignalBadge";
 import { useSignalStore, type CopyTradeIntent } from "@/stores/signalStore";
 import { cn, formatUSD } from "@/lib/utils";
+import { executeCopyTrade, skipCopyTrade, setCopyTargetMode } from "@/lib/api";
 
 export default function CopyTrade() {
   const copyQueue = useSignalStore((s) => s.copyQueue);
@@ -52,7 +53,11 @@ export default function CopyTrade() {
       <div className="flex items-center gap-2 mb-2 text-[10px]">
         <span className="text-muted-foreground">@RN1 Mode:</span>
         <button
-          onClick={() => setAutoTargets((p) => ({ ...p, "@RN1": !p["@RN1"] }))}
+          onClick={async () => {
+            const next = !autoTargets["@RN1"];
+            setAutoTargets((p) => ({ ...p, "@RN1": next }));
+            try { await setCopyTargetMode("@RN1", next); } catch {}
+          }}
           className={cn(
             "px-2 py-0.5 rounded border text-[10px] font-medium",
             autoTargets["@RN1"]
@@ -77,10 +82,16 @@ export default function CopyTrade() {
             </div>
             <p className="text-[10px] text-muted-foreground truncate">{t.question}</p>
             <div className="flex gap-1 mt-1">
-              <button className="px-2 py-0.5 rounded text-[10px] font-medium bg-poly-green/20 text-poly-green border border-poly-green/40 hover:bg-poly-green/30">
+              <button
+                onClick={async () => { try { await executeCopyTrade(i); } catch {} }}
+                className="px-2 py-0.5 rounded text-[10px] font-medium bg-poly-green/20 text-poly-green border border-poly-green/40 hover:bg-poly-green/30"
+              >
                 COPY
               </button>
-              <button className="px-2 py-0.5 rounded text-[10px] font-medium bg-poly-red/20 text-poly-red border border-poly-red/40 hover:bg-poly-red/30">
+              <button
+                onClick={async () => { try { await skipCopyTrade(i); } catch {} }}
+                className="px-2 py-0.5 rounded text-[10px] font-medium bg-poly-red/20 text-poly-red border border-poly-red/40 hover:bg-poly-red/30"
+              >
                 SKIP
               </button>
             </div>

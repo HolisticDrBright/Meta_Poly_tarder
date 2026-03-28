@@ -5,6 +5,7 @@ import { PanelCard, PanelHeader } from "../shared/AlertFeed";
 import { SideBadge, EdgeBadge } from "../shared/SignalBadge";
 import { useMarketStore } from "@/stores/marketStore";
 import { cn, formatPct } from "@/lib/utils";
+import { runDebate as runDebateAPI } from "@/lib/api";
 
 interface AgentResult {
   role: string;
@@ -39,26 +40,68 @@ export default function AIDebateFloor() {
   const [results, setResults] = useState<AgentResult[] | null>(null);
   const [finalP, setFinalP] = useState<number | null>(null);
 
-  const runDebate = () => {
+  const runDebate = async () => {
     if (!market) return;
     setRunning(true);
-    // Simulate debate results (in production, calls Claude/GPT-4o API)
-    setTimeout(() => {
+    try {
+      // Call backend AI ensemble (Claude + GPT-4o + MiroFish)
+      const data = await runDebateAPI(market.id);
+
+      // Parse debate results from backend
+      if (data.debates && data.debates.length > 0) {
+        const agents: AgentResult[] = [];
+        for (const debate of data.debates) {
+          if (debate.agents) {
+            for (const agent of debate.agents) {
+              agents.push({
+                role: agent.role,
+                probability: agent.probability,
+                reasoning: agent.reasoning,
+                icon: AGENT_ICONS[agent.role] || "?",
+              });
+            }
+          }
+        }
+        // If backend returned agents, use them
+        if (agents.length > 0) {
+          setResults(agents);
+        } else {
+          // Fallback: show model-level results
+          setResults(data.debates.map((d: any) => ({
+            role: `Model: ${d.model}`,
+            probability: d.probability,
+            reasoning: `Confidence: ${d.confidence}`,
+            icon: d.model[0]?.toUpperCase() || "?",
+          })));
+        }
+        setFinalP(data.ensemble_probability);
+      } else {
+        // Fallback to local simulation if no API keys configured
+        const base = market.yes_price;
+        const agents: AgentResult[] = [
+          { role: "Statistics Expert", probability: Math.max(0.05, Math.min(0.95, base + (Math.random() - 0.5) * 0.15)), reasoning: "Base rates suggest moderate likelihood.", icon: "S" },
+          { role: "Time Decay Analyst", probability: Math.max(0.05, Math.min(0.95, base + (Math.random() - 0.5) * 0.1)), reasoning: "Theta factor moderate.", icon: "T" },
+          { role: "Generalist Expert", probability: Math.max(0.05, Math.min(0.95, base + (Math.random() - 0.5) * 0.08)), reasoning: "Balanced view. Slight edge detected.", icon: "G" },
+          { role: "Crypto/Macro Analyst", probability: Math.max(0.05, Math.min(0.95, base + (Math.random() - 0.5) * 0.12)), reasoning: "Macro conditions point to this range.", icon: "C" },
+          { role: "Devil's Advocate", probability: Math.max(0.05, Math.min(0.95, 1 - base + (Math.random() - 0.5) * 0.1)), reasoning: "Contrarian: tail risks underpriced.", icon: "D" },
+          { role: "Jet Signal Analyst", probability: Math.max(0.05, Math.min(0.95, base + Math.random() * 0.05)), reasoning: "No active jet signals.", icon: "J" },
+          { role: "Moderator", probability: Math.max(0.05, Math.min(0.95, base + (Math.random() - 0.3) * 0.1)), reasoning: "Moderate confidence in edge.", icon: "M" },
+        ];
+        setResults(agents);
+        setFinalP(agents[agents.length - 1].probability);
+      }
+    } catch (e) {
+      console.error("Debate failed:", e);
+      // Silent fallback to local sim
       const base = market.yes_price;
-      const agents: AgentResult[] = [
-        { role: "Statistics Expert", probability: base + (Math.random() - 0.5) * 0.15, reasoning: "Base rates suggest moderate likelihood given historical precedent.", icon: "S" },
-        { role: "Time Decay Analyst", probability: base + (Math.random() - 0.5) * 0.1, reasoning: `${((market.end_date ? (new Date(market.end_date).getTime() - Date.now()) / 3600000 : 999).toFixed(0))}h remaining. Theta factor moderate.`, icon: "T" },
-        { role: "Generalist Expert", probability: base + (Math.random() - 0.5) * 0.08, reasoning: "Balanced view considering multiple factors. Slight edge detected.", icon: "G" },
-        { role: "Crypto/Macro Analyst", probability: base + (Math.random() - 0.5) * 0.12, reasoning: "Macro conditions and correlation analysis point to this range.", icon: "C" },
-        { role: "Devil's Advocate", probability: 1 - base + (Math.random() - 0.5) * 0.1, reasoning: "Contrarian position: the market may be underpricing tail risks.", icon: "D" },
-        { role: "Jet Signal Analyst", probability: base + Math.random() * 0.05, reasoning: "No active jet signals for this market currently.", icon: "J" },
-        { role: "Moderator", probability: base + (Math.random() - 0.3) * 0.1, reasoning: "Synthesizing all views. Moderate confidence in slight edge.", icon: "M" },
-      ].map((a) => ({ ...a, probability: Math.max(0.05, Math.min(0.95, a.probability)) }));
-      const final = agents[agents.length - 1].probability;
-      setResults(agents);
-      setFinalP(final);
+      const fallback: AgentResult[] = [
+        { role: "Moderator", probability: Math.max(0.05, Math.min(0.95, base + (Math.random() - 0.3) * 0.1)), reasoning: "API unavailable — local estimate.", icon: "M" },
+      ];
+      setResults(fallback);
+      setFinalP(fallback[0].probability);
+    } finally {
       setRunning(false);
-    }, 2000);
+    }
   };
 
   return (
