@@ -49,13 +49,37 @@ class GammaMarket:
 
     @classmethod
     def from_api(cls, data: dict[str, Any]) -> GammaMarket:
-        """Parse a market dict from the Gamma API."""
-        tokens = data.get("clobTokenIds", "")
-        yes_price = float(data.get("outcomePrices", "[0.5,0.5]").strip("[]").split(",")[0])
-        no_price = 1.0 - yes_price
+        """Parse a market dict from the Gamma API.
 
-        best_bid = float(data.get("bestBid", yes_price))
-        best_ask = float(data.get("bestAsk", yes_price))
+        The Gamma API returns outcomePrices in multiple formats:
+          - JSON string: '[\"0.35\",\"0.65\"]' or '[0.35,0.65]'
+          - Already a list: [0.35, 0.65] or ["0.35", "0.65"]
+          - Absent entirely
+        """
+        yes_price = 0.5
+        no_price = 0.5
+        raw_prices = data.get("outcomePrices")
+        if raw_prices is not None:
+            try:
+                if isinstance(raw_prices, str):
+                    import json
+                    parsed = json.loads(raw_prices)
+                elif isinstance(raw_prices, list):
+                    parsed = raw_prices
+                else:
+                    parsed = [0.5, 0.5]
+                if len(parsed) >= 2:
+                    yes_price = float(parsed[0])
+                    no_price = float(parsed[1])
+                elif len(parsed) == 1:
+                    yes_price = float(parsed[0])
+                    no_price = 1.0 - yes_price
+            except (json.JSONDecodeError, ValueError, TypeError):
+                yes_price = 0.5
+                no_price = 0.5
+
+        best_bid = float(data.get("bestBid") or yes_price)
+        best_ask = float(data.get("bestAsk") or yes_price)
 
         end_str = data.get("endDate") or data.get("end_date_iso")
         end_date = None

@@ -29,7 +29,7 @@ from backend.data_layer.gamma_client import GammaClient
 from backend.data_layer.adsb_client import ADSBClient
 from backend.data_layer.data_api_client import DataAPIClient
 from backend.data_layer.storage import DuckDBStorage, SQLiteState
-from backend.strategies.base import MarketState, OrderIntent, Side
+from backend.strategies.base import MarketState, OrderIntent, Position, Side, StrategyName
 from backend.strategies.entropy_screener import EntropyScreener
 from backend.strategies.avellaneda_stoikov import AvellanedaStoikovMM
 from backend.strategies.arb_scanner import ArbScanner
@@ -217,8 +217,300 @@ class TradingScheduler:
         """Poll ADS-B data and check for jet signals."""
         if not settings.strategies.jet:
             return
-        # Jet tracking requires ADS-B credentials configured
-        logger.debug("Jet tracker poll (requires ADS-B credentials)")
+        try:
+            import yaml
+            from pathlib import Path
+            from backend.data_layer.adsb_client import PointOfInterest
+
+            data_dir = Path(__file__).resolve().parent.parent / "data"
+            targets_path = data_dir / "targets.yaml"
+            pois_path = data_dir / "pois.yaml"
+
+            # Load targets
+            icao_list = []
+            target_map: dict[str, dict] = {}
+            if targets_path.exists():
+                with open(targets_path) as f:
+                    tdata = yaml.safe_load(f) or {}
+                for t in tdata.get("targets", []):
+                    for icao in t.get("icao24", []):
+                        icao_list.append(icao)
+                        target_map[icao] = t
+
+            if not icao_list:
+                return
+
+            # Load POIs
+            pois: list[PointOfInterest] = []
+            if pois_path.exists():
+                with open(pois_path) as f:
+                    pdata = yaml.safe_load(f) or {}
+                for p in pdata.get("pois", []):
+                    pois.append(PointOfInterest(
+                        name=p["name"], latitude=p["latitude"],
+                        longitude=p["longitude"], category=p.get("category", ""),
+                        market_tags=p.get("market_tags", []),
+                    ))
+
+            # Fetch positions from OpenSky
+            positions = await self.adsb.get_aircraft_opensky(icao_list)
+            if not positions:
+                return
+
+            # Enrich with target info
+            for pos in positions:
+                info = target_map.get(pos.icao24, {})
+                pos.target_name = info.get("name", "")
+                pos.target_role = info.get("role", "")
+                pos.tail_number = (info.get("tails") or [""])[0]
+
+            # Update shared state with flight data
+            self.state.jet_flights = [
+                {
+                    "target_name": p.target_name, "role": p.target_role,
+                    "tail": p.tail_number, "icao24": p.icao24,
+                    "lat": p.latitude, "lon": p.longitude,
+                    "altitude_ft": p.altitude_ft, "on_ground": p.on_ground,
+                    "timestamp": p.timestamp.isoformat(),
+                }
+                for p in positions
+            ]
+
+            # Check proximity to POIs
+            signals = self.adsb.check_proximity(positions, pois)
+            if signals:
+                self.state.jet_signals = [
+                    {
+                        "target_name": s.aircraft.target_name,
+                        "poi": s.poi.name, "distance_nm": s.distance_nm,
+                        "signal_strength": s.signal_strength,
+                        "market_tags": s.market_tags,
+                        "timestamp": s.timestamp.isoformat(),
+                    }
+                    for s in signals
+                ]
+                # Match to markets and generate intents
+                matched = self.jet.match_signals_to_markets(signals, self.state.markets)
+                intents = await self.jet.evaluate_batch(self.state.markets)
+                self._all_intents.extend(intents)
+                for s in signals:
+                    self.state.add_jet_event({
+                        "target_name": s.aircraft.target_name,
+                        "poi": s.poi.name, "distance_nm": s.distance_nm,
+                        "strength": s.signal_strength,
+                        "timestamp": s.timestamp.isoformat(),
+                    })
+                    await self.state.broadcast("jet_event", {
+                        "target": s.aircraft.target_name,
+                        "poi": s.poi.name,
+                        "distance": s.distance_nm,
+                        "strength": s.signal_strength,
+                    })
+                logger.info(f"Jet tracker: {len(signals)} proximity signals")
+        except Exception as e:
+            logger.error(f"Jet tracker failed: {e}")
+
+    async def update_position_prices(self) -> None:
+        """Update current prices for all open positions."""
+        if not self.state.positions:
+            return
+        try:
+            for pos in self.state.positions:
+                market = self.state.get_market(pos.market_id)
+                if market:
+                    if pos.side == Side.YES:
+                        pos.current_price = market.yes_price
+                    else:
+                        pos.current_price = market.no_price
+
+            # Update unrealized PnL
+            self.state.unrealized_pnl = sum(p.pnl for p in self.state.positions)
+
+            # Persist equity snapshot to DuckDB
+            self.duckdb.insert_snapshot(
+                market_id="__portfolio__",
+                question="equity_snapshot",
+                yes_price=self.state.balance,
+                no_price=self.state.unrealized_pnl,
+                liquidity=self.state.total_exposure,
+                volume_24h=self.state.realized_pnl,
+                entropy_bits=0,
+                kl_divergence=0,
+                model_probability=0,
+            )
+
+            # Update equity curve in shared state
+            from datetime import datetime, timezone
+            self.state.equity_curve.append({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "balance": self.state.balance + self.state.unrealized_pnl,
+                "unrealized_pnl": self.state.unrealized_pnl,
+                "realized_pnl": self.state.realized_pnl,
+            })
+            # Keep last 2000 points
+            self.state.equity_curve = self.state.equity_curve[-2000:]
+
+        except Exception as e:
+            logger.error(f"Position price update failed: {e}")
+
+    async def poll_wallet_activity(self) -> None:
+        """Poll copy target wallets for new trades."""
+        if not settings.strategies.copy:
+            return
+        try:
+            for target_addr in settings.copy.targets:
+                if not target_addr:
+                    continue
+                trades = await self.data_api.get_wallet_trades(target_addr, limit=10)
+                if not trades:
+                    continue
+
+                positions = await self.data_api.get_wallet_positions(target_addr)
+
+                # Add to whale trades feed
+                for trade in trades[:5]:
+                    whale_entry = {
+                        "wallet": target_addr[:10] + "...",
+                        "display_name": target_addr[:8],
+                        "tier": "elite",
+                        "market_id": trade.get("marketId", trade.get("market", "")),
+                        "question": trade.get("question", trade.get("title", "")),
+                        "side": trade.get("side", "YES"),
+                        "size_usdc": float(trade.get("size", trade.get("amount", 0))),
+                        "price": float(trade.get("price", 0)),
+                        "timestamp": trade.get("timestamp", datetime.now(timezone.utc).isoformat()),
+                    }
+                    self.state.add_whale_trade(whale_entry)
+                    await self.state.broadcast("whale_trade", whale_entry)
+
+                    # Queue for copy trading
+                    copy_event = CopyTradeEvent(
+                        target=CopyTarget(
+                            address=target_addr,
+                            display_name=target_addr[:8],
+                            auto_copy=not settings.copy.confluence_required,
+                            copy_ratio=settings.copy.ratio,
+                        ),
+                        market_id=whale_entry["market_id"],
+                        question=whale_entry["question"],
+                        side=Side.YES if whale_entry["side"] == "YES" else Side.NO,
+                        size_usdc=whale_entry["size_usdc"],
+                        price=whale_entry["price"],
+                    )
+                    self.copy.queue_event(copy_event)
+                    self.state.add_to_copy_queue({
+                        "target_name": whale_entry["display_name"],
+                        "market_id": whale_entry["market_id"],
+                        "question": whale_entry["question"],
+                        "side": whale_entry["side"],
+                        "size_usdc": whale_entry["size_usdc"],
+                        "price": whale_entry["price"],
+                        "confluence_count": 0,
+                    })
+
+        except Exception as e:
+            logger.error(f"Wallet polling failed: {e}")
+
+    async def refresh_leaderboard(self) -> None:
+        """Refresh the leaderboard data for whale tracking."""
+        try:
+            entries = await self.data_api.get_leaderboard(limit=25)
+            self.state.leaderboard = [
+                {
+                    "rank": e.rank,
+                    "address": e.address,
+                    "display_name": e.display_name,
+                    "pnl": e.pnl,
+                    "volume": e.volume,
+                    "markets_traded": e.markets_traded,
+                    "win_rate": e.win_rate,
+                    "tier": e.tier,
+                }
+                for e in entries
+            ]
+            # Compute Smart Money Index from top wallet positioning
+            if entries:
+                # Simple SMI: % of top wallets in profit recently
+                profitable = sum(1 for e in entries if e.pnl > 0)
+                self.state.smart_money_index = int(profitable / len(entries) * 100)
+        except Exception as e:
+            logger.error(f"Leaderboard refresh failed: {e}")
+
+    async def persist_state(self) -> None:
+        """Persist current state to DuckDB/SQLite for restart recovery."""
+        try:
+            # Save active positions to SQLite
+            for pos in self.state.positions:
+                self.sqlite.save_strategy_state(
+                    f"position_{pos.market_id}",
+                    {
+                        "market_id": pos.market_id,
+                        "condition_id": pos.condition_id,
+                        "question": pos.question,
+                        "side": pos.side.value,
+                        "entry_price": pos.entry_price,
+                        "size_usdc": pos.size_usdc,
+                        "current_price": pos.current_price,
+                        "strategy": pos.strategy.value,
+                        "opened_at": pos.opened_at.isoformat(),
+                    },
+                )
+
+            # Save equity snapshot
+            self.sqlite.save_strategy_state("__equity__", {
+                "balance": self.state.balance,
+                "realized_pnl": self.state.realized_pnl,
+                "trades_today": self.state.trades_today,
+            })
+        except Exception as e:
+            logger.error(f"State persistence failed: {e}")
+
+    async def restore_state(self) -> None:
+        """Restore state from SQLite on startup."""
+        try:
+            equity = self.sqlite.load_strategy_state("__equity__")
+            if equity:
+                self.state.balance = equity.get("balance", 10000)
+                self.state.realized_pnl = equity.get("realized_pnl", 0)
+                logger.info(f"Restored equity state: balance=${self.state.balance:.2f}")
+
+            # Restore positions
+            existing = self.sqlite.get_active_positions()
+            for row in existing:
+                pos = Position(
+                    market_id=row["market_id"],
+                    condition_id=row.get("condition_id", ""),
+                    question=row.get("question", ""),
+                    side=Side.YES if row["side"] == "YES" else Side.NO,
+                    entry_price=row["entry_price"],
+                    size_usdc=row["size_usdc"],
+                    current_price=row.get("current_price", row["entry_price"]),
+                    strategy=StrategyName(row.get("strategy", "entropy")),
+                )
+                self.state.add_position(pos)
+            if self.state.positions:
+                logger.info(f"Restored {len(self.state.positions)} positions")
+
+            # Restore equity curve from DuckDB
+            rows = self.duckdb.query(
+                "SELECT ts, yes_price as balance, no_price as unrealized_pnl, "
+                "volume_24h as realized_pnl FROM market_snapshots "
+                "WHERE market_id = '__portfolio__' ORDER BY ts DESC LIMIT 2000"
+            )
+            if rows:
+                self.state.equity_curve = [
+                    {
+                        "timestamp": str(r["ts"]),
+                        "balance": r["balance"],
+                        "unrealized_pnl": r["unrealized_pnl"],
+                        "realized_pnl": r["realized_pnl"],
+                    }
+                    for r in reversed(rows)
+                ]
+                logger.info(f"Restored {len(rows)} equity curve points")
+
+        except Exception as e:
+            logger.error(f"State restoration failed: {e}")
 
     async def aggregate_and_execute(self) -> None:
         """Score all intents, run risk checks, and execute approved trades."""
@@ -239,6 +531,13 @@ class TradingScheduler:
                 for si, result in zip(approved, results):
                     if result.success:
                         self.risk.record_trade(si.intent)
+                        self.state.trades_today += 1
+
+                        # Track position in shared state
+                        pos = self.executor.to_position(si.intent, result)
+                        if pos:
+                            self.state.add_position(pos)
+
                         # Store in DuckDB
                         self.duckdb.insert_trade(
                             market_id=si.intent.market_id,
@@ -248,6 +547,7 @@ class TradingScheduler:
                             strategy=si.intent.strategy.value,
                             paper=result.paper,
                         )
+
                         # Telegram alert
                         await self.telegram.trade_alert(
                             strategy=si.intent.strategy.value,
@@ -256,6 +556,16 @@ class TradingScheduler:
                             size=result.fill_size,
                             price=result.fill_price,
                         )
+
+                        # WebSocket broadcast
+                        await self.state.broadcast("trade", {
+                            "strategy": si.intent.strategy.value,
+                            "market_id": si.intent.market_id,
+                            "side": si.intent.side.value,
+                            "price": result.fill_price,
+                            "size": result.fill_size,
+                            "paper": result.paper,
+                        })
 
             # Clear intents for next cycle
             self._all_intents.clear()
@@ -266,6 +576,16 @@ class TradingScheduler:
     async def daily_reset(self) -> None:
         """Reset daily risk counters at midnight UTC."""
         self.risk.reset_daily()
+        self.state.trades_today = 0
+
+        # Compute daily PnL entry
+        from datetime import datetime, timezone
+        self.state.daily_pnl.append({
+            "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            "pnl": self.state.realized_pnl,
+        })
+        self.state.daily_pnl = self.state.daily_pnl[-90:]  # keep 90 days
+
         logger.info("Daily risk counters reset")
         await self.telegram.send("<b>DAILY RESET</b> — Risk counters cleared")
 
@@ -274,12 +594,31 @@ class TradingScheduler:
         self.duckdb.connect()
         self.sqlite.connect()
 
+        # Restore persisted state from previous run
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.ensure_future(self.restore_state())
+            else:
+                loop.run_until_complete(self.restore_state())
+        except RuntimeError:
+            asyncio.run(self.restore_state())
+
         # Market data refresh
         self.scheduler.add_job(
             self.refresh_markets,
             IntervalTrigger(seconds=45),
             id="refresh_markets",
             name="Market data refresh",
+        )
+
+        # Position price updates (every 15s)
+        self.scheduler.add_job(
+            self.update_position_prices,
+            IntervalTrigger(seconds=15),
+            id="position_prices",
+            name="Position price updater",
         )
 
         # Strategy jobs
@@ -314,12 +653,36 @@ class TradingScheduler:
             name="Jet tracker",
         )
 
+        # Wallet polling for copy trading (every 30s)
+        self.scheduler.add_job(
+            self.poll_wallet_activity,
+            IntervalTrigger(seconds=30),
+            id="wallet_poll",
+            name="Copy trade wallet polling",
+        )
+
+        # Leaderboard refresh (every 5 min)
+        self.scheduler.add_job(
+            self.refresh_leaderboard,
+            IntervalTrigger(minutes=5),
+            id="leaderboard",
+            name="Leaderboard refresh",
+        )
+
         # Aggregation + execution
         self.scheduler.add_job(
             self.aggregate_and_execute,
             IntervalTrigger(seconds=30),
             id="aggregate_execute",
             name="Signal aggregation + execution",
+        )
+
+        # State persistence (every 2 min)
+        self.scheduler.add_job(
+            self.persist_state,
+            IntervalTrigger(minutes=2),
+            id="persist_state",
+            name="State persistence",
         )
 
         # Daily reset
@@ -342,9 +705,15 @@ class TradingScheduler:
             f"jet={settings.strategies.jet}, "
             f"copy={settings.strategies.copy}"
         )
+        logger.info(
+            f"Scheduled jobs: markets(45s), positions(15s), entropy(60s), "
+            f"arb(15s), MM(10s), theta(5m), jet(60s), wallet(30s), "
+            f"leaderboard(5m), aggregate(30s), persist(2m), daily(midnight)"
+        )
 
     async def stop(self) -> None:
-        """Graceful shutdown."""
+        """Graceful shutdown — persist state then close all."""
+        await self.persist_state()
         self.scheduler.shutdown(wait=True)
         if not self.executor.paper_trading:
             await self.executor.cancel_all_live()
@@ -354,4 +723,4 @@ class TradingScheduler:
         await self.telegram.close()
         self.duckdb.close()
         self.sqlite.close()
-        logger.info("Trading scheduler stopped")
+        logger.info("Trading scheduler stopped — state persisted")

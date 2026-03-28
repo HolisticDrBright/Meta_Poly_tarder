@@ -161,7 +161,23 @@ class EnsembleAI(Strategy):
                 messages=[{"role": "user", "content": prompt}],
             )
             text = response.content[0].text
-            data = json.loads(text)
+            # Handle both JSON and mixed-content responses
+            try:
+                data = json.loads(text)
+            except json.JSONDecodeError:
+                # Try extracting JSON from markdown code blocks
+                import re
+                match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+                if match:
+                    data = json.loads(match.group(1))
+                else:
+                    # Last resort: try to find raw JSON object
+                    brace_start = text.find("{")
+                    if brace_start >= 0:
+                        data = json.loads(text[brace_start:])
+                    else:
+                        logger.warning("Claude response was not JSON")
+                        return None
             return DebateResult.from_json(data, "claude")
         except Exception as e:
             logger.error(f"Claude debate failed: {e}")
