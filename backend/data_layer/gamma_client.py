@@ -111,11 +111,13 @@ class GammaMarket:
 
 
 class GammaClient:
-    """Async client for the Polymarket Gamma API."""
+    """Async client for the Polymarket Gamma API (rate-limited)."""
 
     def __init__(self, base_url: str = GAMMA_BASE) -> None:
         self.base_url = base_url
         self._session: Optional[aiohttp.ClientSession] = None
+        from backend.data_layer.rate_limiter import GAMMA_LIMITER
+        self._limiter = GAMMA_LIMITER
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -127,6 +129,7 @@ class GammaClient:
             await self._session.close()
 
     async def _get(self, path: str, params: dict | None = None) -> Any:
+        await self._limiter.acquire()
         session = await self._get_session()
         url = f"{self.base_url}{path}"
         async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as resp:

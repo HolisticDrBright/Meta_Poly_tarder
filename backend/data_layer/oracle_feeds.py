@@ -30,6 +30,8 @@ class OracleFeedClient:
 
     def __init__(self) -> None:
         self._session: Optional[aiohttp.ClientSession] = None
+        from backend.data_layer.rate_limiter import BINANCE_LIMITER
+        self._limiter = BINANCE_LIMITER
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -38,6 +40,7 @@ class OracleFeedClient:
 
     async def get_price(self, symbol: str = "BTCUSDT") -> Optional[PriceFeed]:
         """Fetch current spot price."""
+        await self._limiter.acquire()
         session = await self._get_session()
         try:
             async with session.get(
@@ -57,6 +60,7 @@ class OracleFeedClient:
 
     async def get_prices(self, symbols: list[str]) -> dict[str, PriceFeed]:
         """Fetch multiple spot prices."""
+        await self._limiter.acquire()
         results = {}
         session = await self._get_session()
         try:

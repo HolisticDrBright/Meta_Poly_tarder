@@ -35,7 +35,13 @@ class ExecutionResult:
 
 class CLOBLiveClient:
     """
-    Live CLOB order client using py-clob-client for signing.
+    Live CLOB order client using py-clob-client for EIP-712 signing.
+
+    Compatible with py-clob-client >= 0.5.0.
+    The client handles:
+      - API key derivation (HMAC signing)
+      - Order creation with EIP-712 signatures
+      - Order posting, cancellation, and listing
 
     Requires:
       pip install py-clob-client
@@ -48,6 +54,8 @@ class CLOBLiveClient:
         self._wallet_address = wallet_address
         self._signature_type = signature_type
         self._initialized = False
+        from backend.data_layer.rate_limiter import CLOB_LIMITER
+        self._limiter = CLOB_LIMITER
 
     def _ensure_client(self) -> Any:
         """Lazy-init the py-clob-client to avoid import errors if not installed."""
@@ -55,7 +63,6 @@ class CLOBLiveClient:
             return self._client
         try:
             from py_clob_client.client import ClobClient
-            from py_clob_client.clob_types import ApiCreds
 
             self._client = ClobClient(
                 host=CLOB_HOST,
@@ -63,10 +70,15 @@ class CLOBLiveClient:
                 chain_id=CHAIN_ID,
                 signature_type=self._signature_type,
             )
-            # Derive API credentials (HMAC keys)
-            self._client.set_api_creds(self._client.derive_api_key())
+            # Derive HMAC API credentials for authenticated endpoints.
+            # derive_api_key() returns ApiCreds which set_api_creds() stores.
+            creds = self._client.derive_api_key()
+            self._client.set_api_creds(creds)
             self._initialized = True
-            logger.info("CLOB live client initialized")
+            logger.info(
+                f"CLOB live client initialized "
+                f"(wallet={self._wallet_address[:10]}..., chain={CHAIN_ID})"
+            )
             return self._client
         except ImportError:
             logger.error(
@@ -84,34 +96,54 @@ class CLOBLiveClient:
         price: float,
         size: float,
     ) -> dict:
-        """Place a limit order on the CLOB."""
+        """
+        Place a limit order on the CLOB.
+
+        The py-clob-client create_order() expects:
+          OrderArgs: token_id, price, size, side (BUY/SELL)
+
+        BUY = buying the token (YES or NO)
+        SELL = selling the token
+
+        For prediction markets:
+          Betting YES at 0.35 → BUY the YES token at 0.35
+          Betting NO at 0.65 → BUY the NO token at 0.65
+        """
+        await self._limiter.acquire()
         client = self._ensure_client()
         try:
-            from py_clob_client.order_builder.constants import BUY, SELL
+            from py_clob_client.order_builder.constants import BUY
 
-            clob_side = BUY if side == "YES" else SELL
-            order = client.create_order(
-                {
-                    "token_id": token_id,
-                    "price": price,
-                    "size": size,
-                    "side": clob_side,
-                }
-            )
+            # Both YES and NO bets are BUY orders on different token IDs.
+            # The token_id determines which outcome you're buying.
+            order_args = {
+                "token_id": token_id,
+                "price": round(price, 4),  # CLOB requires max 4 decimal places
+                "size": round(size, 2),
+                "side": BUY,
+            }
+
+            order = client.create_order(order_args)
             result = client.post_order(order)
             logger.info(f"LIVE ORDER placed: {side} {size} @ {price} — {result}")
-            return result
+
+            # Normalize the response — py-clob-client returns varying formats
+            if isinstance(result, dict):
+                return result
+            return {"orderID": str(result), "success": True}
+
         except Exception as e:
             logger.error(f"Order placement failed: {e}")
             return {"error": str(e)}
 
     async def cancel_order(self, order_id: str) -> dict:
         """Cancel an open order."""
+        await self._limiter.acquire()
         client = self._ensure_client()
         try:
             result = client.cancel(order_id)
             logger.info(f"Order cancelled: {order_id}")
-            return result
+            return result if isinstance(result, dict) else {"success": True}
         except Exception as e:
             logger.error(f"Cancel failed: {e}")
             return {"error": str(e)}

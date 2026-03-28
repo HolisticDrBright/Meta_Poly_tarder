@@ -76,11 +76,13 @@ class WalletPosition:
 
 
 class DataAPIClient:
-    """Async client for the Polymarket Data API."""
+    """Async client for the Polymarket Data API (rate-limited)."""
 
     def __init__(self, base_url: str = DATA_API_BASE) -> None:
         self.base_url = base_url
         self._session: Optional[aiohttp.ClientSession] = None
+        from backend.data_layer.rate_limiter import DATA_API_LIMITER
+        self._limiter = DATA_API_LIMITER
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -88,6 +90,7 @@ class DataAPIClient:
         return self._session
 
     async def _get(self, path: str, params: dict | None = None) -> Any:
+        await self._limiter.acquire()
         session = await self._get_session()
         url = f"{self.base_url}{path}"
         async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as resp:
@@ -95,35 +98,72 @@ class DataAPIClient:
             return await resp.json()
 
     async def get_leaderboard(self, limit: int = 25) -> list[LeaderboardEntry]:
-        """Fetch top traders from the leaderboard."""
-        try:
-            data = await self._get("/leaderboard", params={"limit": limit})
-            entries = data if isinstance(data, list) else data.get("results", [])
-            return [
-                LeaderboardEntry.from_api(entry, rank=i + 1)
-                for i, entry in enumerate(entries[:limit])
-            ]
-        except Exception as e:
-            logger.error(f"Leaderboard fetch failed: {e}")
-            return []
+        """
+        Fetch top traders from the leaderboard.
+
+        The Polymarket Data API may return data at:
+          /leaderboard or /rankings
+        Response shapes: list or {results: list} or {data: list}
+        """
+        for path in ["/leaderboard", "/rankings"]:
+            try:
+                data = await self._get(path, params={"limit": limit})
+                # Handle multiple response shapes
+                if isinstance(data, list):
+                    entries = data
+                elif isinstance(data, dict):
+                    entries = (
+                        data.get("results")
+                        or data.get("data")
+                        or data.get("leaderboard")
+                        or []
+                    )
+                else:
+                    entries = []
+                if entries:
+                    return [
+                        LeaderboardEntry.from_api(entry, rank=i + 1)
+                        for i, entry in enumerate(entries[:limit])
+                    ]
+            except Exception as e:
+                logger.debug(f"Leaderboard fetch via {path} failed: {e}")
+        logger.warning("All leaderboard endpoints failed")
+        return []
 
     async def get_wallet_positions(self, address: str) -> list[WalletPosition]:
-        """Fetch open positions for a wallet address."""
+        """
+        Fetch open positions for a wallet address.
+
+        Tries multiple field name conventions since the API format may vary.
+        """
         try:
-            data = await self._get(f"/positions", params={"address": address})
-            positions = data if isinstance(data, list) else data.get("positions", [])
-            return [
-                WalletPosition(
-                    market_id=p.get("marketId", p.get("market", "")),
-                    question=p.get("question", ""),
-                    side=p.get("side", "YES"),
-                    size=float(p.get("size", 0)),
-                    avg_price=float(p.get("avgPrice", 0)),
-                    current_price=float(p.get("currentPrice", 0)),
-                    pnl=float(p.get("pnl", 0)),
-                )
-                for p in positions
-            ]
+            data = await self._get("/positions", params={"address": address})
+            positions = (
+                data if isinstance(data, list)
+                else data.get("positions", data.get("data", []))
+                if isinstance(data, dict) else []
+            )
+            result = []
+            for p in positions:
+                try:
+                    result.append(WalletPosition(
+                        market_id=str(
+                            p.get("marketId")
+                            or p.get("market_id")
+                            or p.get("market")
+                            or p.get("conditionId")
+                            or ""
+                        ),
+                        question=p.get("question", p.get("title", "")),
+                        side=p.get("side", p.get("outcome", "YES")).upper(),
+                        size=float(p.get("size", p.get("amount", p.get("shares", 0)))),
+                        avg_price=float(p.get("avgPrice", p.get("avg_price", p.get("price", 0)))),
+                        current_price=float(p.get("currentPrice", p.get("current_price", 0))),
+                        pnl=float(p.get("pnl", p.get("profit", 0))),
+                    ))
+                except (ValueError, TypeError) as e:
+                    logger.debug(f"Skipping malformed position: {e}")
+            return result
         except Exception as e:
             logger.error(f"Wallet positions fetch failed for {address}: {e}")
             return []
@@ -131,11 +171,26 @@ class DataAPIClient:
     async def get_wallet_trades(
         self, address: str, limit: int = 50
     ) -> list[dict]:
-        """Fetch recent trades for a wallet."""
+        """
+        Fetch recent trades for a wallet.
+
+        Normalizes response into a consistent list of dicts regardless
+        of the actual API response shape.
+        """
         try:
-            return await self._get(
-                f"/trades", params={"address": address, "limit": limit}
+            data = await self._get(
+                "/trades", params={"address": address, "limit": limit}
             )
+            if isinstance(data, list):
+                return data
+            if isinstance(data, dict):
+                return (
+                    data.get("trades")
+                    or data.get("data")
+                    or data.get("results")
+                    or []
+                )
+            return []
         except Exception as e:
             logger.error(f"Wallet trades fetch failed: {e}")
             return []

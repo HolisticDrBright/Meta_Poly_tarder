@@ -39,6 +39,7 @@ from backend.strategies.jet_signal import JetSignalStrategy
 from backend.aggregator.signal_aggregator import SignalAggregator
 from backend.risk.engine import RiskEngine
 from backend.execution.executor import OrderExecutor
+from backend.execution.exit_manager import ExitManager, ExitRule
 from backend.observability.alerts import TelegramAlert
 from backend.quant.entropy import market_entropy
 
@@ -103,6 +104,21 @@ class TradingScheduler:
         self.duckdb = DuckDBStorage()
         self.sqlite = SQLiteState()
 
+        # Exit manager
+        self.exit_manager = ExitManager(ExitRule(
+            take_profit_pct=0.30,
+            stop_loss_pct=-0.20,
+            resolution_hours=1.0,
+            trailing_stop_pct=0.15,
+        ))
+
+        # Ensemble AI (for model probability — uses real APIs when keys configured)
+        from backend.strategies.ensemble_ai import EnsembleAI
+        self.ensemble = EnsembleAI(
+            anthropic_api_key=settings.ai.anthropic_api_key,
+            openai_api_key=settings.ai.openai_api_key,
+        )
+
         # Shared state (accessible by API routes)
         from backend.state import system_state
         self.state = system_state
@@ -150,6 +166,50 @@ class TradingScheduler:
                 })
         except Exception as e:
             logger.error(f"Market refresh failed: {e}")
+
+    async def run_ensemble_probabilities(self) -> None:
+        """
+        Run the AI ensemble on top markets to get real model probabilities.
+
+        This replaces the fake simple_model_estimate with actual Claude/GPT-4o
+        debate results. Only runs on the top 10 markets by liquidity to manage
+        API costs. Markets without ensemble results keep their previous model_probability.
+        """
+        if not settings.strategies.ensemble:
+            return
+        if not (settings.ai.anthropic_api_key or settings.ai.openai_api_key):
+            # No AI keys configured — use heuristic fallback
+            for m in self.state.markets:
+                if m.model_probability == 0:
+                    # Contrarian heuristic: nudge toward 0.5 by 10%
+                    nudge = (0.5 - m.yes_price) * 0.10
+                    m.model_probability = max(0.05, min(0.95, m.yes_price + nudge))
+            return
+
+        try:
+            # Only run on top 10 by liquidity (API cost management)
+            top_markets = sorted(
+                self.state.markets, key=lambda m: m.liquidity, reverse=True
+            )[:10]
+
+            for market in top_markets:
+                try:
+                    result = await self.ensemble.run_ensemble(market)
+                    market.model_probability = result.ensemble_probability
+                    market.kl_divergence = abs(
+                        result.ensemble_probability - market.yes_price
+                    )
+                    logger.debug(
+                        f"Ensemble: {market.question[:40]} → "
+                        f"p={result.ensemble_probability:.3f} "
+                        f"(conf={result.ensemble_confidence:.2f})"
+                    )
+                except Exception as e:
+                    logger.warning(f"Ensemble failed for {market.market_id}: {e}")
+                    # Keep previous model_probability
+
+        except Exception as e:
+            logger.error(f"Ensemble probability run failed: {e}")
 
     async def run_entropy_screener(self) -> None:
         """Run entropy screener on all markets."""
@@ -311,7 +371,7 @@ class TradingScheduler:
             logger.error(f"Jet tracker failed: {e}")
 
     async def update_position_prices(self) -> None:
-        """Update current prices for all open positions."""
+        """Update current prices for all open positions and check exit rules."""
         if not self.state.positions:
             return
         try:
@@ -325,6 +385,40 @@ class TradingScheduler:
 
             # Update unrealized PnL
             self.state.unrealized_pnl = sum(p.pnl for p in self.state.positions)
+
+            # Check exit rules (take-profit, stop-loss, resolution, trailing)
+            exit_signals = self.exit_manager.check_exits(
+                self.state.positions, self.state.markets
+            )
+            for signal in exit_signals:
+                logger.info(
+                    f"EXIT: {signal.reason} — {signal.position.question[:40]} "
+                    f"PnL=${signal.pnl:.2f}"
+                )
+                closed = self.state.close_position(signal.position.market_id)
+                if closed:
+                    self.exit_manager.clear_tracking(closed.market_id)
+                    self.duckdb.insert_trade(
+                        market_id=closed.market_id,
+                        side=closed.side.value,
+                        price=closed.current_price,
+                        size_usdc=closed.size_usdc,
+                        strategy=f"{closed.strategy.value}_exit",
+                        paper=self.state.paper_trading,
+                        pnl=closed.pnl,
+                    )
+                    await self.telegram.trade_alert(
+                        strategy=f"{closed.strategy.value}_exit",
+                        side="CLOSE",
+                        market=closed.question,
+                        size=closed.size_usdc,
+                        price=closed.current_price,
+                    )
+                    await self.state.broadcast("position_closed", {
+                        "market_id": closed.market_id,
+                        "reason": signal.reason,
+                        "pnl": closed.pnl,
+                    })
 
             # Persist equity snapshot to DuckDB
             self.duckdb.insert_snapshot(
@@ -340,14 +434,12 @@ class TradingScheduler:
             )
 
             # Update equity curve in shared state
-            from datetime import datetime, timezone
             self.state.equity_curve.append({
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "balance": self.state.balance + self.state.unrealized_pnl,
                 "unrealized_pnl": self.state.unrealized_pnl,
                 "realized_pnl": self.state.realized_pnl,
             })
-            # Keep last 2000 points
             self.state.equity_curve = self.state.equity_curve[-2000:]
 
         except Exception as e:
@@ -619,6 +711,14 @@ class TradingScheduler:
             IntervalTrigger(seconds=15),
             id="position_prices",
             name="Position price updater",
+        )
+
+        # AI ensemble model probabilities (every 3 min — manages API costs)
+        self.scheduler.add_job(
+            self.run_ensemble_probabilities,
+            IntervalTrigger(minutes=3),
+            id="ensemble_probabilities",
+            name="AI ensemble probabilities",
         )
 
         # Strategy jobs

@@ -35,6 +35,8 @@ class NewsFetcher:
     def __init__(self, newsapi_key: str = "") -> None:
         self.newsapi_key = newsapi_key
         self._session: Optional[aiohttp.ClientSession] = None
+        from backend.data_layer.rate_limiter import NEWS_LIMITER
+        self._limiter = NEWS_LIMITER
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -45,6 +47,7 @@ class NewsFetcher:
         """Search NewsAPI for relevant articles."""
         if not self.newsapi_key:
             return []
+        await self._limiter.acquire()
         session = await self._get_session()
         try:
             async with session.get(

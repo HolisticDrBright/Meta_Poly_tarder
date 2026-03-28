@@ -83,7 +83,7 @@ def haversine_nm(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 
 class ADSBClient:
-    """Flight tracking client supporting OpenSky and ADS-B Exchange."""
+    """Flight tracking client supporting OpenSky and ADS-B Exchange (rate-limited)."""
 
     def __init__(
         self,
@@ -95,6 +95,9 @@ class ADSBClient:
         self.opensky_pass = opensky_pass
         self.adsbx_api_key = adsbx_api_key
         self._session: Optional[aiohttp.ClientSession] = None
+        from backend.data_layer.rate_limiter import OPENSKY_LIMITER, ADSBX_LIMITER
+        self._opensky_limiter = OPENSKY_LIMITER
+        self._adsbx_limiter = ADSBX_LIMITER
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -103,6 +106,7 @@ class ADSBClient:
 
     async def get_aircraft_opensky(self, icao24_list: list[str]) -> list[AircraftPosition]:
         """Fetch positions from OpenSky Network."""
+        await self._opensky_limiter.acquire()
         session = await self._get_session()
         auth = None
         if self.opensky_user and self.opensky_pass:
@@ -148,6 +152,7 @@ class ADSBClient:
         """Fetch position from ADS-B Exchange (RapidAPI)."""
         if not self.adsbx_api_key:
             return []
+        await self._adsbx_limiter.acquire()
         session = await self._get_session()
         headers = {
             "X-RapidAPI-Key": self.adsbx_api_key,
