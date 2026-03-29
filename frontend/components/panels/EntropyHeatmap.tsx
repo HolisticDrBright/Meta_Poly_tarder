@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import { PanelCard, PanelHeader } from "../shared/AlertFeed";
 import { EdgeBadge, SideBadge } from "../shared/SignalBadge";
 import { useMarketStore, type Market } from "@/stores/marketStore";
@@ -37,6 +38,13 @@ function edgeStrength(kl: number): string {
 export default function EntropyHeatmap() {
   const markets = useMarketStore((s) => s.markets);
   const selectMarket = useMarketStore((s) => s.selectMarket);
+  const [waited, setWaited] = useState(false);
+
+  // After 5 seconds, stop showing shimmer and show a real message
+  useEffect(() => {
+    const t = setTimeout(() => setWaited(true), 5000);
+    return () => clearTimeout(t);
+  }, []);
 
   const scored = markets
     .filter((m) => m.yes_price > 0.02 && m.yes_price < 0.98)
@@ -114,11 +122,19 @@ export default function EntropyHeatmap() {
             ))}
           </tbody>
         </table>
-        {scored.length === 0 && (
+        {scored.length === 0 && !waited && (
           <div className="py-4 space-y-2">
-            {[...Array(8)].map((_, i) => (
+            {[...Array(6)].map((_, i) => (
               <div key={i} className="shimmer-row" style={{ width: `${85 - i * 5}%` }} />
             ))}
+          </div>
+        )}
+        {scored.length === 0 && waited && (
+          <div className="text-center text-muted-foreground text-sm py-8">
+            No markets loaded — check backend connection
+            <div className="text-[10px] mt-1 text-muted-foreground/60">
+              Backend should be running on port 8000
+            </div>
           </div>
         )}
       </div>

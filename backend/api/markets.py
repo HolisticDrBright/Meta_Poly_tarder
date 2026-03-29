@@ -1,5 +1,5 @@
 """
-Market data API endpoints — with AI debate trigger.
+Market data API endpoints — with AI debate trigger and order book.
 """
 
 from __future__ import annotations
@@ -56,26 +56,33 @@ async def list_markets(
             for m in markets[:limit]
         ]
 
-    # Fallback to direct Gamma API
-    gamma_markets = await _gamma.get_markets(limit=limit, active=active)
-    if min_liquidity > 0:
-        gamma_markets = [m for m in gamma_markets if m.liquidity >= min_liquidity]
-    return [
-        {
-            "id": m.id,
-            "condition_id": m.condition_id,
-            "question": m.question,
-            "category": m.category,
-            "yes_price": m.yes_price,
-            "no_price": m.no_price,
-            "liquidity": m.liquidity,
-            "volume_24h": m.volume_24h,
-            "end_date": m.end_date.isoformat() if m.end_date else None,
-            "spread": m.spread,
-            "entropy_bits": market_entropy(m.yes_price),
-        }
-        for m in gamma_markets
-    ]
+    # Fallback to direct Gamma API call
+    try:
+        gamma_markets = await _gamma.get_markets(limit=limit, active=active)
+        if min_liquidity > 0:
+            gamma_markets = [m for m in gamma_markets if m.liquidity >= min_liquidity]
+        if gamma_markets:
+            return [
+                {
+                    "id": m.id,
+                    "condition_id": m.condition_id,
+                    "question": m.question,
+                    "category": m.category,
+                    "yes_price": m.yes_price,
+                    "no_price": m.no_price,
+                    "liquidity": m.liquidity,
+                    "volume_24h": m.volume_24h,
+                    "end_date": m.end_date.isoformat() if m.end_date else None,
+                    "spread": m.spread,
+                    "entropy_bits": market_entropy(m.yes_price),
+                }
+                for m in gamma_markets
+            ]
+    except Exception as e:
+        logger.error(f"Gamma API fallback failed: {e}")
+
+    # Last resort: return empty list (not 500)
+    return []
 
 
 @router.get("/{market_id}")
@@ -104,26 +111,30 @@ async def get_market(market_id: str):
         }
 
     # Fallback
-    m = await _gamma.get_market(market_id)
-    if not m:
-        raise HTTPException(404, "Market not found")
-    return {
-        "id": m.id,
-        "condition_id": m.condition_id,
-        "question": m.question,
-        "category": m.category,
-        "yes_price": m.yes_price,
-        "no_price": m.no_price,
-        "best_bid": m.best_bid,
-        "best_ask": m.best_ask,
-        "spread": m.spread,
-        "liquidity": m.liquidity,
-        "volume": m.volume,
-        "volume_24h": m.volume_24h,
-        "end_date": m.end_date.isoformat() if m.end_date else None,
-        "arb_edge": 1.0 - m.yes_price - m.no_price,
-        "entropy_bits": market_entropy(m.yes_price),
-    }
+    try:
+        m = await _gamma.get_market(market_id)
+        if m:
+            return {
+                "id": m.id,
+                "condition_id": m.condition_id,
+                "question": m.question,
+                "category": m.category,
+                "yes_price": m.yes_price,
+                "no_price": m.no_price,
+                "best_bid": m.best_bid,
+                "best_ask": m.best_ask,
+                "spread": m.spread,
+                "liquidity": m.liquidity,
+                "volume": m.volume,
+                "volume_24h": m.volume_24h,
+                "end_date": m.end_date.isoformat() if m.end_date else None,
+                "arb_edge": 1.0 - m.yes_price - m.no_price,
+                "entropy_bits": market_entropy(m.yes_price),
+            }
+    except Exception as e:
+        logger.error(f"Market detail fetch failed: {e}")
+
+    raise HTTPException(404, "Market not found")
 
 
 @router.get("/{market_id}/entropy")
@@ -144,16 +155,21 @@ async def market_entropy_detail(
             bankroll=bankroll,
         )
     else:
-        m = await _gamma.get_market(market_id)
-        if not m:
-            raise HTTPException(404, "Market not found")
-        scored = score_market(
-            market_id=m.id,
-            question=m.question,
-            market_price=m.yes_price,
-            model_probability=model_probability,
-            bankroll=bankroll,
-        )
+        try:
+            m = await _gamma.get_market(market_id)
+            if not m:
+                raise HTTPException(404, "Market not found")
+            scored = score_market(
+                market_id=m.id,
+                question=m.question,
+                market_price=m.yes_price,
+                model_probability=model_probability,
+                bankroll=bankroll,
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(503, f"Market data unavailable: {e}")
 
     return {
         "market_id": scored.market_id,
@@ -230,10 +246,9 @@ async def get_orderbook(market_id: str):
     """
     from backend.data_layer.clob_ws import CLOBRestClient
 
+    cached = system_state.get_market(market_id)
     clob = CLOBRestClient()
     try:
-        # Use the market_id as token_id (condition_id may be needed for some markets)
-        cached = system_state.get_market(market_id)
         token_id = cached.condition_id if cached else market_id
 
         book_data = await clob.get_order_book(token_id)
@@ -241,7 +256,6 @@ async def get_orderbook(market_id: str):
         bids = book_data.get("bids", [])
         asks = book_data.get("asks", [])
 
-        # Parse into [[price, size], ...] format
         parsed_bids = [
             [float(b.get("price", b[0]) if isinstance(b, dict) else b[0]),
              float(b.get("size", b[1]) if isinstance(b, dict) else b[1])]
@@ -254,7 +268,6 @@ async def get_orderbook(market_id: str):
             for a in asks
         ] if asks else []
 
-        # Sort
         parsed_bids.sort(key=lambda x: x[0], reverse=True)
         parsed_asks.sort(key=lambda x: x[0])
 
@@ -263,7 +276,6 @@ async def get_orderbook(market_id: str):
         mid = (best_bid + best_ask) / 2 if (parsed_bids and parsed_asks) else 0.5
         spread = best_ask - best_bid if (parsed_bids and parsed_asks) else 0
 
-        # Depth: sum of top 10 levels
         bid_depth = sum(b[1] for b in parsed_bids[:10])
         ask_depth = sum(a[1] for a in parsed_asks[:10])
 
@@ -279,7 +291,6 @@ async def get_orderbook(market_id: str):
         }
     except Exception as e:
         logger.error(f"Order book fetch failed: {e}")
-        # Fallback: return from cached state if available
         if cached:
             return {
                 "market_id": market_id,
@@ -290,7 +301,7 @@ async def get_orderbook(market_id: str):
                 "best_bid": cached.best_bid,
                 "best_ask": cached.best_ask,
                 "depth_10": {"bid": 0, "ask": 0},
-                "note": "Fallback from cached data — CLOB API unreachable",
+                "note": "Fallback from cached data",
             }
         raise HTTPException(503, f"Order book unavailable: {str(e)}")
     finally:

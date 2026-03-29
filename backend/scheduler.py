@@ -155,7 +155,7 @@ class TradingScheduler:
             gamma_markets = await self.gamma.get_active_markets(min_liquidity=10000, limit=100)
             markets = [self._gamma_to_market_state(gm) for gm in gamma_markets]
             self.state.update_markets(markets)
-            logger.debug(f"Refreshed {len(markets)} markets")
+            logger.info(f"Refreshed {len(markets)} markets from Gamma API")
         except Exception as e:
             logger.error(f"Market refresh failed: {e}")
             return  # Don't try to broadcast if refresh failed
