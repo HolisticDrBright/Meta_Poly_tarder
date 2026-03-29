@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.api import markets, signals, portfolio, whale, jet
+from backend.api import markets, signals, portfolio, whale, jet, entropy
 from backend.config import settings
 from backend.data_layer.storage import DuckDBStorage, SQLiteState
 from backend.observability.logger import setup_logging
@@ -104,9 +104,12 @@ app.add_middleware(
 
 # ── mount route modules ─────────────────────────────────────────────
 app.include_router(markets.router, prefix="/api/markets", tags=["Markets"])
+app.include_router(entropy.router, prefix="/api/entropy", tags=["Entropy"])
 app.include_router(signals.router, prefix="/api/signals", tags=["Signals"])
 app.include_router(portfolio.router, prefix="/api/portfolio", tags=["Portfolio"])
 app.include_router(whale.router, prefix="/api/whale", tags=["Whale Tracker"])
+# Alias: /api/whale-tracker routes to the same whale router
+app.include_router(whale.router, prefix="/api/whale-tracker", tags=["Whale Tracker Alias"])
 app.include_router(jet.router, prefix="/api/jet", tags=["Jet Tracker"])
 
 

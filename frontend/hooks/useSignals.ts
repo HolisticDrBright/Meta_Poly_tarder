@@ -14,7 +14,7 @@ export function useMarkets(limit = 50, minLiquidity = 0) {
       const data = await apiFetch<Market[]>(
         `/api/markets?limit=${limit}&min_liquidity=${minLiquidity}`
       );
-      setMarkets(data);
+      setMarkets(Array.isArray(data) ? data : []);
       return data;
     },
     refetchInterval: 45_000,
@@ -27,6 +27,15 @@ export function useMarketDetail(marketId: string | null) {
     queryFn: () => apiFetch(`/api/markets/${marketId}`),
     enabled: !!marketId,
     refetchInterval: 10_000,
+  });
+}
+
+export function useEntropy(limit = 20) {
+  return useQuery({
+    queryKey: ["entropy-top", limit],
+    queryFn: () =>
+      apiFetch<{ markets: any[]; count: number }>(`/api/entropy/top?limit=${limit}`),
+    refetchInterval: 60_000,
   });
 }
 
@@ -49,7 +58,7 @@ export function useSignals() {
       const data = await apiFetch<{ signals: any[]; count: number }>(
         "/api/signals"
       );
-      setSignals(data.signals);
+      setSignals(data.signals || []);
       return data;
     },
     refetchInterval: 30_000,
@@ -62,7 +71,7 @@ export function usePortfolioStats() {
     queryKey: ["portfolio-stats"],
     queryFn: async () => {
       const data = await apiFetch<any>("/api/portfolio/stats");
-      setStats(data);
+      if (data) setStats(data);
       return data;
     },
     refetchInterval: 30_000,
@@ -75,10 +84,23 @@ export function usePositions() {
     queryKey: ["positions"],
     queryFn: async () => {
       const data = await apiFetch<{ positions: any[] }>("/api/portfolio/positions");
-      setPositions(data.positions);
+      setPositions(data.positions || []);
       return data.positions;
     },
     refetchInterval: 15_000,
+  });
+}
+
+export function useWhaleTracker() {
+  const setWhaleTrades = useSignalStore((s) => s.setWhaleTrades);
+  return useQuery({
+    queryKey: ["whale-trades"],
+    queryFn: async () => {
+      const data = await apiFetch<{ trades: any[] }>("/api/whale/trades");
+      setWhaleTrades(data.trades || []);
+      return data;
+    },
+    refetchInterval: 30_000,
   });
 }
 
@@ -96,7 +118,7 @@ export function useJetFlights() {
     queryKey: ["jet-active"],
     queryFn: async () => {
       const data = await apiFetch<{ flights: any[] }>("/api/jet/active");
-      setJetEvents(data.flights);
+      setJetEvents(data.flights || []);
       return data;
     },
     refetchInterval: 60_000,

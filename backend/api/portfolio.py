@@ -1,5 +1,8 @@
 """
 Portfolio, positions, and trade execution API endpoints.
+
+Merges local tracked positions with real CLOB positions when
+L2 auth is configured.
 """
 
 from __future__ import annotations
@@ -13,6 +16,22 @@ from backend.state import system_state
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Lazy-init CLOB auth client
+_clob_auth = None
+
+
+def _get_clob_auth():
+    global _clob_auth
+    if _clob_auth is None:
+        from backend.config import settings
+        from backend.data_layer.clob_auth import CLOBAuthClient
+        _clob_auth = CLOBAuthClient(
+            private_key=settings.trading.private_key,
+            wallet_address=settings.trading.wallet_address,
+            signature_type=settings.trading.signature_type,
+        )
+    return _clob_auth
 
 
 class ManualOrderRequest(BaseModel):
@@ -29,10 +48,45 @@ class ClosePositionRequest(BaseModel):
 
 @router.get("/positions")
 async def list_positions():
-    """Get all active positions."""
-    positions = system_state.get_positions_serialized()
-    total_pnl = sum(p["pnl"] for p in positions)
-    return {"positions": positions, "total_pnl": total_pnl}
+    """
+    Get all open positions — merges local tracked + real CLOB positions.
+
+    If L2 auth is configured, fetches real positions from the CLOB API.
+    Otherwise returns locally tracked positions from paper/live execution.
+    """
+    local_positions = system_state.get_positions_serialized()
+
+    # Try to fetch real positions from CLOB
+    clob = _get_clob_auth()
+    clob_positions = []
+    if clob.available:
+        try:
+            clob_positions = await clob.get_positions()
+        except Exception as e:
+            logger.debug(f"CLOB positions fetch failed (using local only): {e}")
+
+    # Merge: local positions + any CLOB positions not already tracked
+    local_ids = {p["market_id"] for p in local_positions}
+    for cp in clob_positions:
+        if cp.get("market_id") and cp["market_id"] not in local_ids:
+            local_positions.append({
+                "id": len(local_positions),
+                "market_id": cp["market_id"],
+                "question": cp.get("question", ""),
+                "side": cp.get("side", "YES"),
+                "entry_price": cp.get("price", 0),
+                "size_usdc": cp.get("size", 0),
+                "current_price": cp.get("price", 0),
+                "strategy": "clob",
+                "opened_at": "",
+                "pnl": 0,
+                "pnl_pct": 0,
+                "hours_to_close": None,
+                "source": "clob_api",
+            })
+
+    total_pnl = sum(p.get("pnl", 0) for p in local_positions)
+    return {"positions": local_positions, "total_pnl": total_pnl}
 
 
 @router.get("/equity-curve")
@@ -49,8 +103,23 @@ async def daily_pnl():
 
 @router.get("/stats")
 async def portfolio_stats():
-    """Get portfolio statistics."""
-    return system_state.get_stats()
+    """
+    Portfolio statistics — includes real CLOB balance when available.
+    """
+    stats = system_state.get_stats()
+
+    # Try to fetch real balance from CLOB
+    clob = _get_clob_auth()
+    if clob.available:
+        try:
+            real_balance = await clob.get_balance()
+            if real_balance > 0:
+                stats["clob_balance"] = real_balance
+                stats["balance"] = real_balance
+        except Exception:
+            pass
+
+    return stats
 
 
 @router.post("/close")
@@ -81,14 +150,13 @@ async def place_manual_order(req: ManualOrderRequest):
     In live mode: places via CLOB with signing.
     """
     from backend.strategies.base import OrderIntent, OrderType, Side, StrategyName
-    from datetime import datetime, timezone
 
     side = Side.YES if req.side.upper() == "YES" else Side.NO
 
     intent = OrderIntent(
-        strategy=StrategyName.ENTROPY,  # tagged as manual
+        strategy=StrategyName.ENTROPY,
         market_id=req.market_id,
-        condition_id=req.market_id,  # will be resolved by executor
+        condition_id=req.market_id,
         question=req.reason,
         side=side,
         order_type=OrderType.LIMIT,
@@ -98,7 +166,6 @@ async def place_manual_order(req: ManualOrderRequest):
         reason=f"Manual order: {req.reason}",
     )
 
-    # Add to signals feed
     system_state.add_signal(intent)
 
     await system_state.broadcast("signal", {
