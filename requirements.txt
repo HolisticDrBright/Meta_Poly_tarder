@@ -9,6 +9,7 @@ websockets>=12.0
 
 # Async HTTP
 aiohttp>=3.9.0
+aiohttp-socks>=0.8.0      # SOCKS5 proxy for VPN routing
 
 # Database
 duckdb>=0.9.0

@@ -40,7 +40,8 @@ class NewsFetcher:
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession()
+            from backend.data_layer.proxy import get_proxied_session
+            self._session = get_proxied_session()
         return self._session
 
     async def search_news(self, query: str, limit: int = 5) -> list[NewsItem]:

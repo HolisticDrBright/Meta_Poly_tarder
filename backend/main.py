@@ -52,14 +52,47 @@ system_state.set_broadcast(broadcast)
 trading_scheduler = None
 
 
+vpn_guard = None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown hooks."""
-    global trading_scheduler
+    global trading_scheduler, vpn_guard
     logger.info("=" * 60)
     logger.info("  POLYMARKET INTELLIGENCE SYSTEM")
     logger.info(f"  Paper trading: {settings.trading.paper_trading}")
     logger.info("=" * 60)
+
+    # Configure proxy for all HTTP clients
+    from backend.data_layer.proxy import configure_proxy
+    configure_proxy(
+        proxy_url=settings.vpn.proxy_url,
+        vpn_required=settings.vpn.required,
+    )
+
+    # VPN startup gate — blocks trading if VPN is required but not working
+    from backend.observability.vpn_guard import VPNGuard
+    vpn_guard = VPNGuard(
+        proxy_url=settings.vpn.proxy_url,
+        check_url=settings.vpn.check_url,
+        required=settings.vpn.required,
+        check_interval=settings.vpn.check_interval,
+    )
+
+    if settings.vpn.required:
+        vpn_ok = await vpn_guard.startup_gate()
+        if not vpn_ok:
+            logger.critical("VPN STARTUP GATE FAILED — trading disabled")
+            system_state.scheduler_running = False
+            # Still start the app (dashboard works) but don't start trading
+            duckdb.connect()
+            sqlite.connect()
+            yield
+            duckdb.close()
+            sqlite.close()
+            return
+
     duckdb.connect()
     sqlite.connect()
 
@@ -71,6 +104,25 @@ async def lifespan(app: FastAPI):
         trading_scheduler.start()
         system_state.scheduler_running = True
         logger.info("Trading scheduler started — all strategies active")
+
+        # Start VPN runtime monitor (halts trading on VPN drop)
+        async def on_vpn_drop():
+            logger.critical("VPN DROP — halting all trading")
+            if trading_scheduler:
+                trading_scheduler.risk.kill()
+                if not trading_scheduler.executor.paper_trading:
+                    await trading_scheduler.executor.cancel_all_live()
+            await system_state.broadcast("vpn_drop", {"status": "halted"})
+            from backend.observability.alerts import TelegramAlert
+            alert = TelegramAlert(
+                bot_token=settings.alerts.telegram_bot_token,
+                chat_id=settings.alerts.telegram_chat_id,
+            )
+            await alert.risk_alert("VPN DROP DETECTED — all trading halted. Check proxy.")
+            await alert.close()
+
+        vpn_guard.start_monitor(on_drop_callback=on_vpn_drop)
+
     except Exception as e:
         logger.warning(f"Scheduler failed to start (non-fatal): {e}")
         system_state.scheduler_running = False
@@ -79,6 +131,8 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     system_state.scheduler_running = False
+    if vpn_guard:
+        await vpn_guard.stop_monitor()
     if trading_scheduler:
         await trading_scheduler.stop()
     duckdb.close()
@@ -143,7 +197,31 @@ async def websocket_endpoint(ws: WebSocket):
 async def health():
     stats = system_state.get_stats()
     stats["status"] = "ok"
+    if vpn_guard and vpn_guard.last_status:
+        s = vpn_guard.last_status
+        stats["vpn"] = {
+            "healthy": s.healthy,
+            "ip": s.ip,
+            "country": s.country,
+            "error": s.error,
+        }
     return stats
+
+
+@app.get("/api/vpn/status")
+async def vpn_status():
+    """Check VPN status — run a live check through the proxy."""
+    if not vpn_guard:
+        return {"enabled": False, "message": "VPN not configured"}
+    status = await vpn_guard.check()
+    return {
+        "enabled": settings.vpn.required,
+        "healthy": status.healthy,
+        "ip": status.ip,
+        "country": status.country,
+        "org": status.org,
+        "error": status.error,
+    }
 
 
 # ── kill switch ─────────────────────────────────────────────────────

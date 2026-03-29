@@ -102,6 +102,18 @@ class AlertConfig:
 
 
 @dataclass(frozen=True)
+class VPNConfig:
+    proxy_url: str = os.getenv("PROXY_URL", "")
+    check_url: str = os.getenv("VPN_CHECK_URL", "https://ipinfo.io/json")
+    required: bool = _bool(os.getenv("VPN_REQUIRED"), False)
+    check_interval: int = _int(os.getenv("VPN_CHECK_INTERVAL_SECONDS"), 300)
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.proxy_url) and self.required
+
+
+@dataclass(frozen=True)
 class Settings:
     trading: TradingConfig = field(default_factory=TradingConfig)
     ai: AIConfig = field(default_factory=AIConfig)
@@ -110,6 +122,7 @@ class Settings:
     copy: CopyConfig = field(default_factory=CopyConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     alerts: AlertConfig = field(default_factory=AlertConfig)
+    vpn: VPNConfig = field(default_factory=VPNConfig)
 
 
 settings = Settings()
