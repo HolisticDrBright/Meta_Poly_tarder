@@ -1,120 +1,57 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
-import { Responsive, WidthProvider, Layout } from "react-grid-layout";
-import "react-grid-layout/css/styles.css";
-import "react-resizable/css/styles.css";
+import { useState, useCallback, useEffect, Suspense } from "react";
+import dynamic from "next/dynamic";
 
 import { useMarkets, usePortfolioStats, usePositions, useSignals } from "@/hooks/useSignals";
-import { useWebSocket } from "@/hooks/useWebSocket";
 import { usePortfolioStore } from "@/stores/portfolioStore";
 import { useMarketStore } from "@/stores/marketStore";
 
-import WorldMap from "@/components/panels/WorldMap";
-import EntropyHeatmap from "@/components/panels/EntropyHeatmap";
-import MarketDetail from "@/components/panels/MarketDetail";
-import OrderBook from "@/components/panels/OrderBook";
-import JetTracker from "@/components/panels/JetTracker";
-import WhaleTracker from "@/components/panels/WhaleTracker";
-import CopyTrade from "@/components/panels/CopyTrade";
-import AIDebateFloor from "@/components/panels/AIDebateFloor";
-import VolumeSpikes from "@/components/panels/VolumeSpikes";
-import MarketMaker from "@/components/panels/MarketMaker";
-import EquityCurve from "@/components/panels/EquityCurve";
-import KellyCalc from "@/components/panels/KellyCalc";
-import Portfolio from "@/components/panels/Portfolio";
-
-const ResponsiveGridLayout = WidthProvider(Responsive);
-
-const DEFAULT_LAYOUTS: Record<string, Layout[]> = {
-  lg: [
-    // Row 1 (h=4): World Map | Entropy Heatmap
-    { i: "world-map", x: 0, y: 0, w: 6, h: 4, minW: 3, minH: 3 },
-    { i: "entropy-heatmap", x: 6, y: 0, w: 6, h: 4, minW: 4, minH: 3 },
-    // Row 2 (h=3): Market Detail | Order Book | Jet Tracker
-    { i: "market-detail", x: 0, y: 4, w: 4, h: 4, minW: 3, minH: 3 },
-    { i: "order-book", x: 4, y: 4, w: 4, h: 4, minW: 3, minH: 3 },
-    { i: "jet-tracker", x: 8, y: 4, w: 4, h: 4, minW: 3, minH: 3 },
-    // Row 3 (h=3): Whale | Copy Trade | AI Debate
-    { i: "whale-tracker", x: 0, y: 8, w: 3, h: 4, minW: 2, minH: 3 },
-    { i: "copy-trade", x: 3, y: 8, w: 3, h: 4, minW: 2, minH: 3 },
-    { i: "ai-debate", x: 6, y: 8, w: 6, h: 4, minW: 4, minH: 3 },
-    // Row 4 (h=2): Volume | Market Maker | Equity Curve
-    { i: "volume-spikes", x: 0, y: 12, w: 3, h: 3, minW: 2, minH: 2 },
-    { i: "market-maker", x: 3, y: 12, w: 3, h: 3, minW: 2, minH: 2 },
-    { i: "equity-curve", x: 6, y: 12, w: 6, h: 3, minW: 4, minH: 2 },
-    // Row 5 (h=2): Kelly | Portfolio
-    { i: "kelly-calc", x: 0, y: 15, w: 4, h: 4, minW: 3, minH: 3 },
-    { i: "portfolio", x: 4, y: 15, w: 8, h: 4, minW: 4, minH: 3 },
-  ],
-  md: [
-    { i: "world-map", x: 0, y: 0, w: 5, h: 4 },
-    { i: "entropy-heatmap", x: 5, y: 0, w: 5, h: 4 },
-    { i: "market-detail", x: 0, y: 4, w: 5, h: 4 },
-    { i: "order-book", x: 5, y: 4, w: 5, h: 4 },
-    { i: "jet-tracker", x: 0, y: 8, w: 5, h: 4 },
-    { i: "whale-tracker", x: 5, y: 8, w: 5, h: 4 },
-    { i: "copy-trade", x: 0, y: 12, w: 5, h: 4 },
-    { i: "ai-debate", x: 5, y: 12, w: 5, h: 4 },
-    { i: "volume-spikes", x: 0, y: 16, w: 5, h: 3 },
-    { i: "market-maker", x: 5, y: 16, w: 5, h: 3 },
-    { i: "equity-curve", x: 0, y: 19, w: 10, h: 3 },
-    { i: "kelly-calc", x: 0, y: 22, w: 5, h: 4 },
-    { i: "portfolio", x: 5, y: 22, w: 5, h: 4 },
-  ],
-};
-
-const PANEL_MAP: Record<string, React.FC> = {
-  "world-map": WorldMap,
-  "entropy-heatmap": EntropyHeatmap,
-  "market-detail": MarketDetail,
-  "order-book": OrderBook,
-  "jet-tracker": JetTracker,
-  "whale-tracker": WhaleTracker,
-  "copy-trade": CopyTrade,
-  "ai-debate": AIDebateFloor,
-  "volume-spikes": VolumeSpikes,
-  "market-maker": MarketMaker,
-  "equity-curve": EquityCurve,
-  "kelly-calc": KellyCalc,
-  portfolio: Portfolio,
-};
+// Dynamic imports — these all access `window` and crash during SSR
+const DashboardGrid = dynamic(() => import("@/components/DashboardGrid"), {
+  ssr: false,
+  loading: () => (
+    <div className="flex items-center justify-center h-[80vh] text-muted-foreground">
+      Loading dashboard panels...
+    </div>
+  ),
+});
 
 export default function DashboardPage() {
-  const [layouts, setLayouts] = useState(DEFAULT_LAYOUTS);
-  const [hydrated, setHydrated] = useState(false);
+  const [mounted, setMounted] = useState(false);
   const stats = usePortfolioStore((s) => s.stats);
   const positions = usePortfolioStore((s) => s.positions);
 
   // Data hooks — fetch on mount and auto-refresh
-  const { isLoading: marketsLoading } = useMarkets(50);
-  const { isLoading: statsLoading } = usePortfolioStats();
+  useMarkets(50);
+  usePortfolioStats();
   usePositions();
   useSignals();
-  useWebSocket();
+
+  // Ensure we're client-side before rendering anything that touches window
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   // Eager hydration — populate stores immediately on mount
-  // Uses runtime detection: NEXT_PUBLIC_API_URL baked at build, or
-  // same-origin host with backend port, or localhost fallback.
   useEffect(() => {
+    if (!mounted) return;
     const buildTimeUrl = process.env.NEXT_PUBLIC_API_URL;
-    const runtimeUrl = typeof window !== "undefined"
-      ? `http://${window.location.hostname}:8000`
-      : "http://localhost:8000";
+    const runtimeUrl = `http://${window.location.hostname}:8000`;
     const API = buildTimeUrl || runtimeUrl;
 
     console.log("[Hydration] Fetching from:", API);
 
     Promise.all([
       fetch(`${API}/api/portfolio/stats`, { signal: AbortSignal.timeout(8000) })
-        .then((r) => { console.log("[Hydration] stats:", r.status); return r.ok ? r.json() : null; })
-        .catch((e) => { console.warn("[Hydration] stats failed:", e); return null; }),
+        .then((r) => r.ok ? r.json() : null)
+        .catch(() => null),
       fetch(`${API}/api/portfolio/positions`, { signal: AbortSignal.timeout(8000) })
-        .then((r) => { console.log("[Hydration] positions:", r.status); return r.ok ? r.json() : null; })
-        .catch((e) => { console.warn("[Hydration] positions failed:", e); return null; }),
+        .then((r) => r.ok ? r.json() : null)
+        .catch(() => null),
       fetch(`${API}/api/markets?limit=50`, { signal: AbortSignal.timeout(8000) })
-        .then((r) => { console.log("[Hydration] markets:", r.status); return r.ok ? r.json() : null; })
-        .catch((e) => { console.warn("[Hydration] markets failed:", e); return null; }),
+        .then((r) => r.ok ? r.json() : null)
+        .catch(() => null),
     ]).then(([statsData, posData, marketsData]) => {
       console.log("[Hydration] Results:", {
         stats: !!statsData,
@@ -124,20 +61,12 @@ export default function DashboardPage() {
       if (statsData) usePortfolioStore.setState({ stats: statsData });
       if (posData?.positions) usePortfolioStore.setState({ positions: posData.positions });
       if (marketsData && Array.isArray(marketsData)) useMarketStore.setState({ markets: marketsData });
-      setHydrated(true);
     });
-  }, []);
+  }, [mounted]);
 
   const totalBalance = stats.balance + (stats.unrealized_pnl || 0);
   const totalROI = stats.balance > 0 ? ((totalBalance - 10000) / 10000) * 100 : 0;
   const activeTradeCount = positions.length;
-
-  const handleLayoutChange = useCallback(
-    (_: Layout[], allLayouts: Record<string, Layout[]>) => {
-      setLayouts(allLayouts);
-    },
-    []
-  );
 
   return (
     <div className="min-h-screen bg-background">
@@ -176,8 +105,8 @@ export default function DashboardPage() {
             </div>
             <div className="text-center">
               <div className="text-[9px] text-muted-foreground uppercase tracking-wider">Today P&L</div>
-              <div className={`text-sm font-semibold font-mono ${stats.realized_pnl >= 0 ? "text-poly-green" : "text-poly-red"}`}>
-                {stats.realized_pnl >= 0 ? "+" : ""}${(stats.realized_pnl || 0).toFixed(2)}
+              <div className={`text-sm font-semibold font-mono ${(stats.realized_pnl || 0) >= 0 ? "text-poly-green" : "text-poly-red"}`}>
+                {(stats.realized_pnl || 0) >= 0 ? "+" : ""}${(stats.realized_pnl || 0).toFixed(2)}
               </div>
             </div>
           </div>
@@ -194,27 +123,9 @@ export default function DashboardPage() {
         </div>
       </header>
 
-      {/* Dashboard grid */}
+      {/* Dashboard grid — only renders client-side */}
       <main className="p-2">
-        <ResponsiveGridLayout
-          className="layout"
-          layouts={layouts}
-          breakpoints={{ lg: 1200, md: 768 }}
-          cols={{ lg: 12, md: 10 }}
-          rowHeight={60}
-          onLayoutChange={handleLayoutChange}
-          draggableHandle=".react-grid-item"
-          isResizable={true}
-          isDraggable={true}
-          compactType="vertical"
-          margin={[8, 8]}
-        >
-          {Object.entries(PANEL_MAP).map(([key, Component]) => (
-            <div key={key}>
-              <Component />
-            </div>
-          ))}
-        </ResponsiveGridLayout>
+        {mounted ? <DashboardGrid /> : null}
       </main>
     </div>
   );
