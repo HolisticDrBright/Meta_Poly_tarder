@@ -5,17 +5,25 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-// Runtime URL detection: works on VPS, localhost, or any host.
-// NEXT_PUBLIC_API_URL is baked at build time — if not set, detect from browser.
+// URL detection: uses same-origin (relative) when behind nginx proxy,
+// or explicit URL when NEXT_PUBLIC_API_URL is set to a full URL.
+// Empty string = relative = works behind nginx on any port.
 function getApiUrl(): string {
-  if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
-  if (typeof window !== "undefined") return `http://${window.location.hostname}:8000`;
-  return "http://localhost:8000";
+  const env = process.env.NEXT_PUBLIC_API_URL;
+  // Explicit full URL set (e.g. "http://localhost:8000")
+  if (env && env.startsWith("http")) return env;
+  // Empty or not set = use relative URLs (same origin, nginx proxies /api)
+  return "";
 }
 
 function getWsUrl(): string {
-  if (process.env.NEXT_PUBLIC_WS_URL) return process.env.NEXT_PUBLIC_WS_URL;
-  if (typeof window !== "undefined") return `ws://${window.location.hostname}:8000/ws/live`;
+  const env = process.env.NEXT_PUBLIC_WS_URL;
+  if (env && env.startsWith("ws")) return env;
+  // Build WebSocket URL from current page origin
+  if (typeof window !== "undefined") {
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${proto}//${window.location.host}/ws/live`;
+  }
   return "ws://localhost:8000/ws/live";
 }
 

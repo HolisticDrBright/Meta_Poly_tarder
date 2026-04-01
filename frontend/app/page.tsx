@@ -42,9 +42,8 @@ export default function Page() {
   // Eager hydration
   useEffect(() => {
     setMounted(true);
-    const buildTimeUrl = process.env.NEXT_PUBLIC_API_URL;
-    const runtimeUrl = `http://${window.location.hostname}:8000`;
-    const API = buildTimeUrl || runtimeUrl;
+    // Use relative URLs — nginx proxies /api to the backend
+    const API = "";
 
     Promise.all([
       fetch(`${API}/api/portfolio/stats`, { signal: AbortSignal.timeout(8000) }).then((r) => r.ok ? r.json() : null).catch(() => null),

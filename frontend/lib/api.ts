@@ -4,9 +4,9 @@
  */
 
 function getApiUrl(): string {
-  if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
-  if (typeof window !== "undefined") return `http://${window.location.hostname}:8000`;
-  return "http://localhost:8000";
+  const env = process.env.NEXT_PUBLIC_API_URL;
+  if (env && env.startsWith("http")) return env;
+  return ""; // relative URLs — works behind nginx proxy
 }
 
 const API_URL = getApiUrl();
