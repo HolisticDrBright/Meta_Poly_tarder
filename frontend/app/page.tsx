@@ -56,8 +56,9 @@ export default function Page() {
     });
   }, []);
 
-  const totalBalance = stats.balance + (stats.unrealized_pnl || 0);
-  const roi = stats.balance > 0 ? ((totalBalance - 10000) / 10000) * 100 : 0;
+  const totalPnL = (stats.realized_pnl || 0) + (stats.unrealized_pnl || 0);
+  const totalBalance = (stats.balance || 10000) + totalPnL;
+  const roi = totalPnL !== 0 ? (totalPnL / 10000) * 100 : 0;
 
   return (
     <div className="min-h-screen flex flex-col" style={{ backgroundColor: Colors.background }}>
