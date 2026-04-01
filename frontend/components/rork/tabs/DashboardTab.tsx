@@ -1,0 +1,224 @@
+"use client";
+
+import { useEffect, useState, useMemo } from "react";
+import { Activity, Zap, Target, TrendingUp, TrendingDown, CheckCircle, XCircle, ArrowUpRight, ArrowDownRight } from "lucide-react";
+import { Colors, type ActiveTrade, type RegimeInfo, type PortfolioGrowthPoint } from "@/lib/rork-types";
+import { usePortfolioStore } from "@/stores/portfolioStore";
+import { useMarketStore } from "@/stores/marketStore";
+import OpportunityCard from "../OpportunityCard";
+import PortfolioChart from "../PortfolioChart";
+
+function getConfidenceColor(c: string) {
+  if (c === "high") return Colors.green;
+  if (c === "medium") return Colors.amber;
+  return Colors.coral;
+}
+
+export default function DashboardTab() {
+  const stats = usePortfolioStore((s) => s.stats);
+  const positions = usePortfolioStore((s) => s.positions);
+  const equityCurve = usePortfolioStore((s) => s.equityCurve);
+  const markets = useMarketStore((s) => s.markets);
+  const selectMarket = useMarketStore((s) => s.selectMarket);
+  const [chartWidth, setChartWidth] = useState(500);
+
+  useEffect(() => {
+    setChartWidth(Math.min(window.innerWidth - 80, 600));
+    const h = () => setChartWidth(Math.min(window.innerWidth - 80, 600));
+    window.addEventListener("resize", h);
+    return () => window.removeEventListener("resize", h);
+  }, []);
+
+  const totalPnL = stats.realized_pnl + (stats.unrealized_pnl || 0);
+  const pnlColor = totalPnL >= 0 ? Colors.green : Colors.coral;
+  const todayColor = (stats.realized_pnl || 0) >= 0 ? Colors.green : Colors.coral;
+  const wins = positions.filter((p: any) => (p.pnl || 0) > 0).length;
+  const losses = positions.filter((p: any) => (p.pnl || 0) < 0).length;
+  const winRate = wins + losses > 0 ? ((wins / (wins + losses)) * 100).toFixed(1) : "0";
+  const roi = stats.balance > 0 ? (((stats.balance + (stats.unrealized_pnl || 0) - 10000) / 10000) * 100).toFixed(1) : "0";
+
+  const regime: RegimeInfo = useMemo(() => {
+    if (markets.length === 0) return { label: "Scanning...", confidence: "low" as const };
+    const avgVol = markets.reduce((s: number, m: any) => s + (m.volume_24h || 0), 0) / markets.length;
+    if (avgVol > 50000) return { label: "Information-Driven", confidence: "high" as const };
+    if (avgVol > 10000) return { label: "Consensus-Grind", confidence: "medium" as const };
+    return { label: "Low-Activity", confidence: "low" as const };
+  }, [markets]);
+
+  const growthData: PortfolioGrowthPoint[] = useMemo(() => {
+    if (equityCurve.length > 2) {
+      return equityCurve.slice(-16).map((p: any, i: number) => ({
+        day: new Date(p.timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+        value: p.balance || 10000,
+      }));
+    }
+    return [{ day: "Start", value: 10000 }, { day: "Now", value: stats.balance + (stats.unrealized_pnl || 0) }];
+  }, [equityCurve, stats]);
+
+  const marketOpps = useMemo(() => {
+    return markets.slice(0, 9).map((m: any) => {
+      const modelP = m.model_probability || m.yes_price;
+      const edge = ((modelP - m.yes_price) * 100);
+      const score = Math.min(100, Math.max(0, Math.round(Math.abs(edge) * 10 + (m.liquidity || 0) / 10000)));
+      let classification: "PAPER TRADE" | "WATCHLIST" | "NO-TRADE" = "NO-TRADE";
+      if (score >= 60) classification = "PAPER TRADE";
+      else if (score >= 40) classification = "WATCHLIST";
+      const sparkline = Array.from({ length: 20 }, (_, i) => ({ value: (m.yes_price || 0.5) * 100 + (Math.random() - 0.5) * 10 }));
+      return {
+        id: m.id, title: m.question || m.title || "Market", category: (m.category || "economics") as any,
+        opportunityScore: score, edgeEstimate: +edge.toFixed(1), classification,
+        sparkline, currentPrice: m.yes_price || 0.5,
+        volume24h: m.volume_24h ? `$${(m.volume_24h / 1000).toFixed(0)}K` : "$0",
+        lastUpdated: "now", aiSummary: "", fairProbability: modelP, marketProbability: m.yes_price || 0.5,
+      };
+    });
+  }, [markets]);
+
+  const activeTrades: ActiveTrade[] = useMemo(() => {
+    return positions.slice(0, 6).map((p: any) => ({
+      id: p.id?.toString() || p.market_id,
+      title: p.question || "Position",
+      direction: (p.side || "YES") as "YES" | "NO",
+      entryPrice: p.entry_price || 0,
+      currentPrice: p.current_price || p.entry_price || 0,
+      pnl: p.pnl || 0,
+      size: Math.round(p.size_usdc || 0),
+      enteredAt: p.opened_at ? new Date(p.opened_at).toLocaleDateString() : "",
+    }));
+  }, [positions]);
+
+  const quickStats = [
+    { label: "Markets Scanned", value: markets.length.toString(), Icon: Activity },
+    { label: "Active Signals", value: positions.length.toString(), Icon: Zap },
+    { label: "Win Rate", value: `${winRate}%`, Icon: Target },
+  ];
+
+  return (
+    <div className="max-w-2xl mx-auto space-y-3 pb-8">
+      {/* Regime Banner */}
+      <div className="flex items-center justify-between rounded-xl px-3.5 py-2.5" style={{ backgroundColor: Colors.card, border: `1px solid ${Colors.cardBorder}` }}>
+        <div className="flex items-center gap-2">
+          <div className="w-2 h-2 rounded-full" style={{ backgroundColor: getConfidenceColor(regime.confidence) }} />
+          <span className="text-[11px] font-semibold font-mono tracking-wider" style={{ color: Colors.textTertiary }}>REGIME:</span>
+          <span className="text-[13px] font-bold font-mono" style={{ color: Colors.textPrimary }}>{regime.label}</span>
+        </div>
+        <span className="text-[9px] font-bold font-mono tracking-wider px-2 py-0.5 rounded" style={{ color: getConfidenceColor(regime.confidence), backgroundColor: getConfidenceColor(regime.confidence) + "1A" }}>
+          {regime.confidence.toUpperCase()}
+        </span>
+      </div>
+
+      {/* Portfolio Strip */}
+      <div className="rounded-xl p-3.5 space-y-3" style={{ backgroundColor: Colors.card, border: `1px solid ${Colors.cardBorder}` }}>
+        <div className="flex justify-between items-start">
+          <div>
+            <div className="text-[11px] font-semibold uppercase tracking-wider mb-0.5" style={{ color: Colors.textTertiary }}>Paper P&L</div>
+            <div className="text-2xl font-extrabold font-mono" style={{ color: pnlColor }}>
+              {totalPnL >= 0 ? "+" : ""}${Math.abs(totalPnL).toLocaleString("en-US", { minimumFractionDigits: 2 })}
+            </div>
+          </div>
+          <div className="text-right">
+            <div className="text-[9px] font-bold font-mono tracking-wider" style={{ color: Colors.textTertiary }}>TODAY</div>
+            <div className="flex items-center gap-1 justify-end">
+              {(stats.realized_pnl || 0) >= 0 ? <ArrowUpRight size={14} color={todayColor} /> : <ArrowDownRight size={14} color={todayColor} />}
+              <span className="text-[15px] font-bold font-mono" style={{ color: todayColor }}>
+                {(stats.realized_pnl || 0) >= 0 ? "+" : ""}${Math.abs(stats.realized_pnl || 0).toFixed(2)}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Metrics grid */}
+        <div className="flex justify-around items-center py-3" style={{ borderTop: `1px solid ${Colors.surfaceBorder}`, borderBottom: `1px solid ${Colors.surfaceBorder}` }}>
+          <div className="text-center">
+            <div className="flex items-center gap-1 justify-center"><CheckCircle size={12} color={Colors.green} /><span className="text-base font-bold font-mono" style={{ color: Colors.green }}>{wins}</span></div>
+            <div className="text-[9px] font-semibold uppercase tracking-wider" style={{ color: Colors.textTertiary }}>Wins</div>
+          </div>
+          <div className="w-px h-7" style={{ backgroundColor: Colors.surfaceBorder }} />
+          <div className="text-center">
+            <div className="flex items-center gap-1 justify-center"><XCircle size={12} color={Colors.coral} /><span className="text-base font-bold font-mono" style={{ color: Colors.coral }}>{losses}</span></div>
+            <div className="text-[9px] font-semibold uppercase tracking-wider" style={{ color: Colors.textTertiary }}>Losses</div>
+          </div>
+          <div className="w-px h-7" style={{ backgroundColor: Colors.surfaceBorder }} />
+          <div className="text-center">
+            <span className="text-base font-bold font-mono" style={{ color: Colors.textPrimary }}>{winRate}%</span>
+            <div className="text-[9px] font-semibold uppercase tracking-wider" style={{ color: Colors.textTertiary }}>Win Rate</div>
+          </div>
+          <div className="w-px h-7" style={{ backgroundColor: Colors.surfaceBorder }} />
+          <div className="text-center">
+            <span className="text-base font-bold font-mono" style={{ color: Colors.cyan }}>{+roi >= 0 ? "+" : ""}{roi}%</span>
+            <div className="text-[9px] font-semibold uppercase tracking-wider" style={{ color: Colors.textTertiary }}>ROI</div>
+          </div>
+        </div>
+
+        {/* Bottom stats */}
+        <div className="flex justify-around items-center">
+          <div className="text-center"><span className="text-base font-bold font-mono" style={{ color: Colors.textPrimary }}>{positions.length}</span><div className="text-[10px] font-medium uppercase tracking-wider" style={{ color: Colors.textTertiary }}>Positions</div></div>
+          <div className="w-px h-6" style={{ backgroundColor: Colors.surfaceBorder }} />
+          <div className="text-center"><span className="text-base font-bold font-mono" style={{ color: Colors.textPrimary }}>{stats.sharpe_ratio?.toFixed(3) || "—"}</span><div className="text-[10px] font-medium uppercase tracking-wider" style={{ color: Colors.textTertiary }}>Sharpe</div></div>
+          <div className="w-px h-6" style={{ backgroundColor: Colors.surfaceBorder }} />
+          <div className="text-center"><span className="text-base font-bold font-mono" style={{ color: Colors.cyan }}>{stats.win_rate ? `${(stats.win_rate * 100).toFixed(0)}%` : "—"}</span><div className="text-[10px] font-medium uppercase tracking-wider" style={{ color: Colors.textTertiary }}>Accuracy</div></div>
+        </div>
+      </div>
+
+      {/* Portfolio Chart */}
+      <PortfolioChart data={growthData} width={chartWidth} height={160} />
+
+      {/* Quick Stats */}
+      <div className="grid grid-cols-3 gap-2">
+        {quickStats.map((s) => (
+          <div key={s.label} className="flex flex-col items-center rounded-xl p-3 gap-1" style={{ backgroundColor: Colors.card, border: `1px solid ${Colors.cardBorder}` }}>
+            <div className="w-7 h-7 rounded-full flex items-center justify-center" style={{ backgroundColor: Colors.cyanDim }}>
+              <s.Icon size={14} color={Colors.cyan} />
+            </div>
+            <span className="text-lg font-bold font-mono" style={{ color: Colors.textPrimary }}>{s.value}</span>
+            <span className="text-[9px] font-semibold uppercase tracking-wider text-center" style={{ color: Colors.textTertiary }}>{s.label}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Active Trades */}
+      {activeTrades.length > 0 && (
+        <>
+          <div className="flex justify-between items-center mt-1">
+            <span className="text-[11px] font-bold font-mono tracking-widest" style={{ color: Colors.textSecondary }}>ACTIVE TRADES</span>
+            <span className="text-[11px] font-mono" style={{ color: Colors.textTertiary }}>{activeTrades.length} positions</span>
+          </div>
+          {activeTrades.map((t) => {
+            const tColor = t.pnl >= 0 ? Colors.green : Colors.coral;
+            const isUp = t.currentPrice >= t.entryPrice;
+            return (
+              <div key={t.id} className="rounded-xl p-3 space-y-2.5" style={{ backgroundColor: Colors.card, border: `1px solid ${Colors.cardBorder}` }}>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 flex-1 min-w-0">
+                    <span className="px-1.5 py-0.5 rounded text-[10px] font-bold font-mono tracking-wider" style={{ backgroundColor: t.direction === "YES" ? Colors.greenDim : Colors.coralDim, color: t.direction === "YES" ? Colors.green : Colors.coral }}>{t.direction}</span>
+                    <span className="text-[13px] font-semibold truncate" style={{ color: Colors.textPrimary }}>{t.title}</span>
+                  </div>
+                  <span className="text-sm font-bold font-mono" style={{ color: tColor }}>{t.pnl >= 0 ? "+" : ""}${Math.abs(t.pnl).toFixed(0)}</span>
+                </div>
+                <div className="flex justify-between pt-2" style={{ borderTop: `1px solid ${Colors.surfaceBorder}` }}>
+                  <div><div className="text-[9px] font-semibold uppercase tracking-wider" style={{ color: Colors.textTertiary }}>Entry</div><div className="text-xs font-semibold font-mono" style={{ color: Colors.textSecondary }}>{(t.entryPrice * 100).toFixed(0)}&cent;</div></div>
+                  <div><div className="text-[9px] font-semibold uppercase tracking-wider" style={{ color: Colors.textTertiary }}>Now</div><div className="flex items-center gap-1"><span className="text-xs font-semibold font-mono" style={{ color: isUp ? Colors.green : Colors.coral }}>{(t.currentPrice * 100).toFixed(0)}&cent;</span></div></div>
+                  <div><div className="text-[9px] font-semibold uppercase tracking-wider" style={{ color: Colors.textTertiary }}>Size</div><div className="text-xs font-semibold font-mono" style={{ color: Colors.textSecondary }}>${t.size.toLocaleString()}</div></div>
+                  <div><div className="text-[9px] font-semibold uppercase tracking-wider" style={{ color: Colors.textTertiary }}>Opened</div><div className="text-xs font-semibold font-mono" style={{ color: Colors.textSecondary }}>{t.enteredAt}</div></div>
+                </div>
+              </div>
+            );
+          })}
+        </>
+      )}
+
+      {/* Opportunity Feed */}
+      {marketOpps.length > 0 && (
+        <>
+          <div className="flex justify-between items-center mt-1">
+            <span className="text-[11px] font-bold font-mono tracking-widest" style={{ color: Colors.textSecondary }}>OPPORTUNITY FEED</span>
+            <span className="text-[11px] font-mono" style={{ color: Colors.textTertiary }}>{marketOpps.length} markets</span>
+          </div>
+          {marketOpps.map((m) => (
+            <OpportunityCard key={m.id} market={m} onClick={() => selectMarket(m.id)} />
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
