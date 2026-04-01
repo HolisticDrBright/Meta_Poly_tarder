@@ -37,10 +37,12 @@ class LeaderboardEntry:
 
     @classmethod
     def from_api(cls, data: dict[str, Any], rank: int) -> LeaderboardEntry:
-        pnl = float(data.get("pnl", data.get("profit", 0)))
-        volume = float(data.get("volume", 0))
+        # Fields from Polymarket Data API /v1/leaderboard:
+        # rank, proxyWallet, userName, vol, pnl, profileImage, xUsername, verifiedBadge
+        pnl = float(data.get("pnl", data.get("profit", 0)) or 0)
+        volume = float(data.get("vol", data.get("volume", 0)) or 0)
+        api_rank = data.get("rank")
 
-        # tier based on PnL
         if pnl > 100_000:
             tier = "legendary"
         elif pnl > 25_000:
@@ -51,12 +53,12 @@ class LeaderboardEntry:
             tier = "rising"
 
         return cls(
-            rank=rank,
-            address=data.get("address", data.get("proxyWallet", "")),
-            display_name=data.get("displayName", data.get("username", "")),
+            rank=int(api_rank) if api_rank else rank,
+            address=data.get("proxyWallet", data.get("address", "")),
+            display_name=data.get("userName", data.get("displayName", data.get("username", ""))),
             pnl=pnl,
             volume=volume,
-            markets_traded=int(data.get("marketsTraded", data.get("numMarkets", 0))),
+            markets_traded=int(data.get("marketsTraded", data.get("numMarkets", 0)) or 0),
             win_rate=float(data.get("winRate", 0)),
             tier=tier,
         )
@@ -98,34 +100,30 @@ class DataAPIClient:
             resp.raise_for_status()
             return await resp.json()
 
-    async def get_leaderboard(self, limit: int = 25) -> list[LeaderboardEntry]:
+    async def get_leaderboard(
+        self,
+        limit: int = 25,
+        category: str = "OVERALL",
+        time_period: str = "WEEK",
+        order_by: str = "PNL",
+    ) -> list[LeaderboardEntry]:
         """
-        Fetch top traders from the leaderboard.
+        Fetch top traders from the Polymarket leaderboard.
 
-        The Polymarket Data API may return data at:
-          /leaderboard or /rankings
-        Response shapes: list or {results: list} or {data: list}
+        Endpoint: GET /v1/leaderboard
+        Params: category, timePeriod, orderBy, limit, offset
+        Response: array of TraderLeaderboardEntry
         """
-        for path in ["/leaderboard", "/rankings"]:
-            try:
-                data = await self._get(path, params={"limit": limit})
-                # Handle multiple response shapes
-                if isinstance(data, list):
-                    entries = data
-                elif isinstance(data, dict):
-                    entries = (
-                        data.get("results")
-                        or data.get("data")
-                        or data.get("leaderboard")
-                        or []
-                    )
-                else:
-                    entries = []
-                if entries:
-                    return [
-                        LeaderboardEntry.from_api(entry, rank=i + 1)
-                        for i, entry in enumerate(entries[:limit])
-                    ]
+        try:
+            data = await self._get("/v1/leaderboard", params={
+                "category": category,
+                "timePeriod": time_period,
+                "orderBy": order_by,
+                "limit": min(limit, 50),
+                "offset": 0,
+            })
+            entries = data if isinstance(data, list) else []
+            if entries:
             except Exception as e:
                 logger.debug(f"Leaderboard fetch via {path} failed: {e}")
         logger.warning("All leaderboard endpoints failed")
