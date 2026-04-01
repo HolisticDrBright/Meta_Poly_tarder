@@ -97,9 +97,9 @@ class GammaMarket:
             end_date=end_date,
             active=data.get("active", True),
             closed=data.get("closed", False),
-            liquidity=float(data.get("liquidity", 0)),
-            volume=float(data.get("volume", 0)),
-            volume_24h=float(data.get("volume24hr", 0)),
+            liquidity=float(data.get("liquidityNum", data.get("liquidity", 0)) or 0),
+            volume=float(data.get("volumeNum", data.get("volume", 0)) or 0),
+            volume_24h=float(data.get("volume24hr", 0) or 0),
             yes_price=yes_price,
             no_price=no_price,
             best_bid=best_bid,
@@ -143,10 +143,11 @@ class GammaClient:
         offset: int = 0,
         active: bool = True,
         closed: bool = False,
-        order: str = "liquidity",
+        order: str = "volume24hr",
         ascending: bool = False,
+        liquidity_min: float = 0,
     ) -> list[GammaMarket]:
-        """Fetch markets sorted by liquidity (descending by default)."""
+        """Fetch markets sorted by 24h volume (descending by default)."""
         params = {
             "limit": limit,
             "offset": offset,
@@ -155,6 +156,8 @@ class GammaClient:
             "order": order,
             "ascending": str(ascending).lower(),
         }
+        if liquidity_min > 0:
+            params["liquidity_num_min"] = liquidity_min
         data = await self._get("/markets", params=params)
         if isinstance(data, list):
             return [GammaMarket.from_api(m) for m in data]
@@ -172,12 +175,20 @@ class GammaClient:
 
     async def get_active_markets(
         self,
-        min_liquidity: float = 25_000,
-        limit: int = 50,
+        min_liquidity: float = 10_000,
+        limit: int = 100,
     ) -> list[GammaMarket]:
-        """Get active markets filtered by minimum liquidity."""
-        markets = await self.get_markets(limit=limit, active=True, closed=False)
-        return [m for m in markets if m.liquidity >= min_liquidity]
+        """Get active markets with real liquidity, sorted by 24h volume."""
+        markets = await self.get_markets(
+            limit=limit,
+            active=True,
+            closed=False,
+            order="volume24hr",
+            ascending=False,
+            liquidity_min=min_liquidity,
+        )
+        # Filter out markets with zero prices (closed/resolved)
+        return [m for m in markets if m.yes_price > 0.01 and m.yes_price < 0.99 and m.liquidity >= min_liquidity]
 
     async def get_events(self, limit: int = 50) -> list[dict]:
         """Fetch events (groups of related markets)."""
