@@ -124,9 +124,12 @@ class DataAPIClient:
             })
             entries = data if isinstance(data, list) else []
             if entries:
-            except Exception as e:
-                logger.debug(f"Leaderboard fetch via {path} failed: {e}")
-        logger.warning("All leaderboard endpoints failed")
+                return [
+                    LeaderboardEntry.from_api(entry, rank=i + 1)
+                    for i, entry in enumerate(entries[:limit])
+                ]
+        except Exception as e:
+            logger.warning(f"Leaderboard fetch failed: {e}")
         return []
 
     async def get_wallet_positions(self, address: str) -> list[WalletPosition]:
