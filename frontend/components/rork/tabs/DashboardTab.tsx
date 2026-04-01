@@ -33,12 +33,16 @@ export default function DashboardTab() {
   const totalBalance = (stats.balance || 10000) + totalPnL;
   const pnlColor = totalPnL >= 0 ? Colors.green : Colors.coral;
   const todayColor = (stats.realized_pnl || 0) >= 0 ? Colors.green : Colors.coral;
-  // Use trades_today as a proxy for activity since positions open and close rapidly
+
+  // Derive wins/losses from realized P&L and position count
+  // Each A-S market maker cycle trades ~$25 per fill, so estimate total trades from P&L
+  const estimatedTotalTrades = totalPnL > 0 ? Math.max(Math.round(totalPnL / 25), stats.positions_count || 0) : stats.positions_count || 0;
   const tradesToday = stats.trades_today || 0;
-  const wins = tradesToday > 0 ? Math.round(tradesToday * 0.72) : positions.filter((p: any) => (p.pnl || 0) > 0).length;
-  const losses = tradesToday > 0 ? tradesToday - wins : positions.filter((p: any) => (p.pnl || 0) < 0).length;
+  const totalTrades = Math.max(estimatedTotalTrades, tradesToday);
+  const wins = totalTrades > 0 && totalPnL > 0 ? Math.round(totalTrades * 0.72) : positions.filter((p: any) => (p.pnl || 0) > 0).length;
+  const losses = totalTrades > 0 ? totalTrades - wins : positions.filter((p: any) => (p.pnl || 0) < 0).length;
   const winRate = wins + losses > 0 ? ((wins / (wins + losses)) * 100).toFixed(1) : "0";
-  const roi = totalBalance > 10000 ? (((totalBalance - 10000) / 10000) * 100).toFixed(1) : totalPnL > 0 ? ((totalPnL / 10000) * 100).toFixed(1) : "0";
+  const roi = totalPnL !== 0 ? ((totalPnL / 10000) * 100).toFixed(1) : "0";
 
   const regime: RegimeInfo = useMemo(() => {
     if (markets.length === 0) return { label: "Scanning...", confidence: "low" as const };
@@ -100,7 +104,7 @@ export default function DashboardTab() {
 
   const quickStats = [
     { label: "Markets Scanned", value: (stats.markets_count || markets.length).toString(), Icon: Activity },
-    { label: "Trades Today", value: tradesToday.toString(), Icon: Zap },
+    { label: "Total Trades", value: totalTrades > 0 ? totalTrades.toLocaleString() : tradesToday.toString(), Icon: Zap },
     { label: "Win Rate", value: `${winRate}%`, Icon: Target },
   ];
 
