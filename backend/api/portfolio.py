@@ -46,6 +46,18 @@ class ClosePositionRequest(BaseModel):
     market_id: str
 
 
+# Lazy-init DuckDB for trade log queries
+_duckdb = None
+
+def _get_duckdb():
+    global _duckdb
+    if _duckdb is None:
+        from backend.data_layer.storage import DuckDBStorage
+        _duckdb = DuckDBStorage()
+        _duckdb.connect()
+    return _duckdb
+
+
 @router.get("/positions")
 async def list_positions():
     """
@@ -87,6 +99,51 @@ async def list_positions():
 
     total_pnl = sum(p.get("pnl", 0) for p in local_positions)
     return {"positions": local_positions, "total_pnl": total_pnl}
+
+
+@router.get("/trade-log")
+async def trade_log(
+    limit: int = 200,
+    filter: str = "all",  # "all", "wins", "losses"
+):
+    """
+    Get the full trade log with win/loss history.
+
+    Every open and close is recorded with timestamp, market name,
+    side, price, size, strategy, P&L, and exit reason.
+    """
+    db = _get_duckdb()
+    trades = db.get_trade_log(
+        limit=limit,
+        wins_only=(filter == "wins"),
+        losses_only=(filter == "losses"),
+    )
+    # Convert timestamps to strings for JSON
+    for t in trades:
+        if t.get("ts"):
+            t["ts"] = str(t["ts"])
+    return {"trades": trades, "count": len(trades)}
+
+
+@router.get("/trade-stats")
+async def trade_stats():
+    """
+    Get aggregate win/loss statistics from the trade log.
+
+    Returns: total_trades, wins, losses, breakeven, total_pnl,
+    gross_profit, gross_loss, avg_pnl, best_trade, worst_trade, win_rate.
+    """
+    db = _get_duckdb()
+    stats = db.get_trade_stats()
+    if stats:
+        total = stats.get("total_trades", 0)
+        wins = stats.get("wins", 0)
+        stats["win_rate"] = (wins / total * 100) if total > 0 else 0
+        stats["profit_factor"] = (
+            abs(stats.get("gross_profit", 0) / stats.get("gross_loss", 1))
+            if stats.get("gross_loss", 0) != 0 else float("inf")
+        )
+    return stats or {}
 
 
 @router.get("/equity-curve")

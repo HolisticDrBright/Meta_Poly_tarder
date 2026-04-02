@@ -82,12 +82,15 @@ class DuckDBStorage:
             CREATE TABLE IF NOT EXISTS trades (
                 ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 market_id VARCHAR,
+                question VARCHAR,
                 side VARCHAR,
                 price DOUBLE,
                 size_usdc DOUBLE,
                 strategy VARCHAR,
                 paper BOOLEAN DEFAULT TRUE,
-                pnl DOUBLE DEFAULT 0
+                pnl DOUBLE DEFAULT 0,
+                trade_type VARCHAR DEFAULT 'open',
+                exit_reason VARCHAR DEFAULT ''
             )
         """)
         self._conn.execute("""
@@ -129,6 +132,42 @@ class DuckDBStorage:
             f"INSERT INTO trades ({cols}) VALUES ({placeholders})",
             list(kwargs.values()),
         )
+
+    def get_trade_log(self, limit: int = 200, wins_only: bool = False, losses_only: bool = False) -> list[dict]:
+        """Get trade history with win/loss status."""
+        if self._conn is None:
+            return []
+        where = ""
+        if wins_only:
+            where = "WHERE pnl > 0"
+        elif losses_only:
+            where = "WHERE pnl < 0"
+        return self.query(
+            f"SELECT ts, market_id, question, side, price, size_usdc, strategy, "
+            f"paper, pnl, trade_type, exit_reason FROM trades {where} "
+            f"ORDER BY ts DESC LIMIT ?",
+            [limit],
+        )
+
+    def get_trade_stats(self) -> dict:
+        """Get aggregate win/loss statistics."""
+        if self._conn is None:
+            return {}
+        rows = self.query("""
+            SELECT
+                COUNT(*) as total_trades,
+                COUNT(CASE WHEN pnl > 0 THEN 1 END) as wins,
+                COUNT(CASE WHEN pnl < 0 THEN 1 END) as losses,
+                COUNT(CASE WHEN pnl = 0 THEN 1 END) as breakeven,
+                COALESCE(SUM(pnl), 0) as total_pnl,
+                COALESCE(SUM(CASE WHEN pnl > 0 THEN pnl ELSE 0 END), 0) as gross_profit,
+                COALESCE(SUM(CASE WHEN pnl < 0 THEN pnl ELSE 0 END), 0) as gross_loss,
+                COALESCE(AVG(pnl), 0) as avg_pnl,
+                COALESCE(MAX(pnl), 0) as best_trade,
+                COALESCE(MIN(pnl), 0) as worst_trade
+            FROM trades WHERE trade_type = 'close' OR pnl != 0
+        """)
+        return rows[0] if rows else {}
 
     def query(self, sql: str, params: list | None = None) -> list[dict]:
         if self._conn is None:

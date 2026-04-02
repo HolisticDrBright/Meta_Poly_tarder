@@ -404,12 +404,15 @@ class TradingScheduler:
                     self.exit_manager.clear_tracking(closed.market_id)
                     self.duckdb.insert_trade(
                         market_id=closed.market_id,
+                        question=closed.question[:200],
                         side=closed.side.value,
                         price=closed.current_price,
                         size_usdc=closed.size_usdc,
                         strategy=f"{closed.strategy.value}_exit",
                         paper=self.state.paper_trading,
                         pnl=closed.pnl,
+                        trade_type="close",
+                        exit_reason=signal.reason[:200],
                     )
                     await self.telegram.trade_alert(
                         strategy=f"{closed.strategy.value}_exit",
@@ -637,11 +640,13 @@ class TradingScheduler:
                         # Store in DuckDB
                         self.duckdb.insert_trade(
                             market_id=si.intent.market_id,
+                            question=si.intent.question[:200],
                             side=si.intent.side.value,
                             price=result.fill_price,
                             size_usdc=result.fill_size,
                             strategy=si.intent.strategy.value,
                             paper=result.paper,
+                            trade_type="open",
                         )
 
                         # Telegram alert
