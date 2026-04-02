@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
-import { Bell, Shield, Cpu, Database, RefreshCw, Info, ChevronRight } from "lucide-react";
+import { useState, useEffect } from "react";
+import { Bell, Shield, Cpu, Database, RefreshCw, Info, ChevronRight, Zap, AlertTriangle, Power } from "lucide-react";
 import { Colors } from "@/lib/rork-types";
 import { usePortfolioStore } from "@/stores/portfolioStore";
 import { killSwitch, unkill } from "@/lib/api";
+import { apiFetch } from "@/lib/utils";
 
 function SettingRow({ icon, label, value, hasToggle, toggleValue, onToggle }: {
   icon: React.ReactNode; label: string; value?: string;
@@ -41,8 +42,162 @@ export default function SettingsTab() {
   const [regimeAlerts, setRegimeAlerts] = useState(true);
   const [riskAlerts, setRiskAlerts] = useState(false);
 
+  // Execution mode state
+  const [execMode, setExecMode] = useState<"paper" | "live">("paper");
+  const [isKilled, setIsKilled] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [dailyStats, setDailyStats] = useState<any>(null);
+
+  // Fetch execution status on mount
+  useEffect(() => {
+    apiFetch<any>("/api/v1/execution/status").then((d) => {
+      if (d?.mode) setExecMode(d.mode);
+      if (d?.kill_switch !== undefined) setIsKilled(d.kill_switch);
+      if (d?.daily_stats) setDailyStats(d.daily_stats);
+    }).catch(() => {});
+  }, []);
+
+  const handleModeToggle = async () => {
+    if (execMode === "paper") {
+      // Switching to LIVE — show confirmation
+      setShowConfirm(true);
+    } else {
+      // Switching back to paper
+      try {
+        await apiFetch("/api/v1/execution/mode", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: "paper" }) } as any);
+        setExecMode("paper");
+      } catch {}
+    }
+  };
+
+  const confirmGoLive = async () => {
+    try {
+      await apiFetch("/api/v1/execution/mode", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: "live" }) } as any);
+      setExecMode("live");
+    } catch {}
+    setShowConfirm(false);
+  };
+
+  const handleKill = async () => {
+    try {
+      await killSwitch();
+      setIsKilled(true);
+      setExecMode("paper");
+    } catch {}
+  };
+
+  const handleResume = async () => {
+    try {
+      await unkill();
+      setIsKilled(false);
+    } catch {}
+  };
+
   return (
     <div className="max-w-2xl mx-auto p-4 pb-8 space-y-4">
+
+      {/* ── EXECUTION MODE ── */}
+      <span className="text-[11px] font-bold font-mono tracking-widest block" style={{ color: Colors.textTertiary }}>EXECUTION MODE</span>
+      <div className="rounded-xl overflow-hidden" style={{ backgroundColor: Colors.card, border: `1px solid ${Colors.cardBorder}` }}>
+        <div className="p-4 space-y-3">
+          {/* Mode toggle */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <Power size={20} color={execMode === "live" ? Colors.green : Colors.textTertiary} />
+              <div>
+                <span className="text-sm font-semibold" style={{ color: Colors.textPrimary }}>Trading Mode</span>
+                <div className="text-[10px] font-mono" style={{ color: Colors.textTertiary }}>
+                  {execMode === "live" ? "LIVE — Real USDC at risk" : "PAPER — Simulated trades only"}
+                </div>
+              </div>
+            </div>
+            <button onClick={handleModeToggle}
+              className="px-4 py-2 rounded-lg text-xs font-bold font-mono tracking-wider transition-all"
+              style={{
+                backgroundColor: execMode === "live" ? Colors.greenDim : Colors.surfaceBorder,
+                border: `1px solid ${execMode === "live" ? Colors.green : Colors.textTertiary}`,
+                color: execMode === "live" ? Colors.green : Colors.textTertiary,
+              }}>
+              {execMode === "live" ? "LIVE" : "PAPER"}
+            </button>
+          </div>
+
+          {/* Kill switch */}
+          {isKilled && (
+            <div className="p-2.5 rounded-lg" style={{ backgroundColor: "rgba(255,59,92,0.1)", border: "1px solid rgba(255,59,92,0.3)" }}>
+              <div className="flex items-center gap-2">
+                <AlertTriangle size={14} color={Colors.coral} />
+                <span className="text-xs font-bold" style={{ color: Colors.coral }}>KILL SWITCH ACTIVE — All trading halted</span>
+              </div>
+            </div>
+          )}
+
+          {/* Daily safety stats */}
+          {dailyStats && (
+            <div className="grid grid-cols-2 gap-2 pt-2" style={{ borderTop: `1px solid ${Colors.surfaceBorder}` }}>
+              <div className="text-center">
+                <span className="text-sm font-bold font-mono" style={{ color: Colors.textPrimary }}>{dailyStats.trades_today || 0}/{dailyStats.max_trades || 50}</span>
+                <div className="text-[8px] font-semibold uppercase" style={{ color: Colors.textTertiary }}>Trades Today</div>
+              </div>
+              <div className="text-center">
+                <span className="text-sm font-bold font-mono" style={{ color: (dailyStats.daily_pnl || 0) >= 0 ? Colors.green : Colors.coral }}>
+                  {(dailyStats.daily_pnl || 0) >= 0 ? "+" : ""}${Math.abs(dailyStats.daily_pnl || 0).toFixed(2)}
+                </span>
+                <div className="text-[8px] font-semibold uppercase" style={{ color: Colors.textTertiary }}>Daily P&L / ${dailyStats.max_daily_loss || 45} limit</div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Emergency controls */}
+      <div className="flex gap-2">
+        <button onClick={handleKill}
+          className="flex-1 py-3 rounded-xl text-xs font-bold font-mono tracking-wider flex items-center justify-center gap-2"
+          style={{ backgroundColor: Colors.coralDim, color: Colors.coral, border: `1px solid rgba(255,59,92,0.3)` }}>
+          <AlertTriangle size={14} /> KILL SWITCH
+        </button>
+        <button onClick={handleResume}
+          className="flex-1 py-3 rounded-xl text-xs font-bold font-mono tracking-wider flex items-center justify-center gap-2"
+          style={{ backgroundColor: Colors.greenDim, color: Colors.green, border: `1px solid rgba(0,214,143,0.3)` }}>
+          <Zap size={14} /> RESUME
+        </button>
+      </div>
+
+      {/* ── Confirmation Modal ── */}
+      {showConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ backgroundColor: "rgba(0,0,0,0.7)" }}>
+          <div className="rounded-2xl p-6 mx-4 max-w-sm space-y-4" style={{ backgroundColor: Colors.card, border: `1px solid ${Colors.cardBorder}` }}>
+            <div className="flex items-center gap-3">
+              <AlertTriangle size={24} color={Colors.amber} />
+              <span className="text-lg font-bold" style={{ color: Colors.textPrimary }}>Go Live?</span>
+            </div>
+            <p className="text-sm leading-relaxed" style={{ color: Colors.textSecondary }}>
+              You are about to enable <strong style={{ color: Colors.coral }}>live trading</strong> with real USDC.
+              Starting capital: <strong>${dailyStats?.starting_capital || 300}</strong>.
+              All safety guardrails remain active.
+            </p>
+            <div className="text-[10px] space-y-1" style={{ color: Colors.textTertiary }}>
+              <div>Max trade: $30 | Max daily loss: $45</div>
+              <div>Kill switch at 35% drawdown</div>
+            </div>
+            <div className="flex gap-2 pt-2">
+              <button onClick={() => setShowConfirm(false)}
+                className="flex-1 py-2.5 rounded-lg text-xs font-bold font-mono"
+                style={{ backgroundColor: Colors.surfaceBorder, color: Colors.textSecondary }}>
+                CANCEL
+              </button>
+              <button onClick={confirmGoLive}
+                className="flex-1 py-2.5 rounded-lg text-xs font-bold font-mono"
+                style={{ backgroundColor: Colors.coralDim, color: Colors.coral, border: `1px solid rgba(255,59,92,0.4)` }}>
+                CONFIRM — GO LIVE
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── AGENT CONFIGURATION ── */}
       <span className="text-[11px] font-bold font-mono tracking-widest block" style={{ color: Colors.textTertiary }}>AGENT CONFIGURATION</span>
       <div className="rounded-xl overflow-hidden" style={{ backgroundColor: Colors.card, border: `1px solid ${Colors.cardBorder}` }}>
         <SettingRow icon={<Cpu size={18} color={Colors.cyan} />} label="Agent Ensemble Size" value="7 agents" />
@@ -63,23 +218,11 @@ export default function SettingsTab() {
 
       <span className="text-[11px] font-bold font-mono tracking-widest block" style={{ color: Colors.textTertiary }}>RISK MANAGEMENT</span>
       <div className="rounded-xl overflow-hidden" style={{ backgroundColor: Colors.card, border: `1px solid ${Colors.cardBorder}` }}>
-        <SettingRow icon={<Shield size={18} color={Colors.coral} />} label="Max Position Size" value="$150" />
+        <SettingRow icon={<Shield size={18} color={Colors.coral} />} label="Max Trade Size" value="$30" />
         <div className="h-px ml-10" style={{ backgroundColor: Colors.surfaceBorder }} />
-        <SettingRow icon={<Shield size={18} color={Colors.amber} />} label="Min Opportunity Score" value="40" />
-      </div>
-
-      <span className="text-[11px] font-bold font-mono tracking-widest block" style={{ color: Colors.textTertiary }}>EMERGENCY</span>
-      <div className="flex gap-2">
-        <button onClick={async () => { try { await killSwitch(); } catch {} }}
-          className="flex-1 py-3 rounded-xl text-xs font-bold font-mono tracking-wider"
-          style={{ backgroundColor: Colors.coralDim, color: Colors.coral, border: `1px solid rgba(255,59,92,0.3)` }}>
-          KILL SWITCH
-        </button>
-        <button onClick={async () => { try { await unkill(); } catch {} }}
-          className="flex-1 py-3 rounded-xl text-xs font-bold font-mono tracking-wider"
-          style={{ backgroundColor: Colors.greenDim, color: Colors.green, border: `1px solid rgba(0,214,143,0.3)` }}>
-          RESUME
-        </button>
+        <SettingRow icon={<Shield size={18} color={Colors.amber} />} label="Max Daily Loss" value="$45" />
+        <div className="h-px ml-10" style={{ backgroundColor: Colors.surfaceBorder }} />
+        <SettingRow icon={<Shield size={18} color={Colors.coral} />} label="Max Drawdown" value="35%" />
       </div>
 
       <span className="text-[11px] font-bold font-mono tracking-widest block" style={{ color: Colors.textTertiary }}>ABOUT</span>
@@ -90,7 +233,7 @@ export default function SettingsTab() {
       <div className="text-center mt-7 space-y-1">
         <p className="text-xs font-semibold" style={{ color: Colors.textTertiary }}>MetaPoly — Prediction Market Intelligence</p>
         <p className="text-[10px] font-mono" style={{ color: Colors.textTertiary }}>
-          {stats.paper_trading ? "Research mode only. No real money at risk." : "LIVE MODE."}
+          {execMode === "live" ? "LIVE TRADING MODE — Real funds at risk" : "Research mode only. No real money at risk."}
         </p>
       </div>
     </div>

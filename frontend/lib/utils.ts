@@ -30,10 +30,11 @@ function getWsUrl(): string {
 export const API_URL = getApiUrl();
 export const WS_URL = getWsUrl();
 
-export async function apiFetch<T>(path: string): Promise<T> {
+export async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   try {
     const res = await fetch(`${API_URL}${path}`, {
       signal: AbortSignal.timeout(10000),
+      ...options,
     });
     if (!res.ok) throw new Error(`API error: ${res.status}`);
     return res.json();
