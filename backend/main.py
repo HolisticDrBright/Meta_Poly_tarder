@@ -166,6 +166,14 @@ app.include_router(whale.router, prefix="/api/whale", tags=["Whale Tracker"])
 app.include_router(whale.router, prefix="/api/whale-tracker", tags=["Whale Tracker Alias"])
 app.include_router(jet.router, prefix="/api/jet", tags=["Jet Tracker"])
 
+# Prediction Intelligence Layer
+try:
+    from prediction_intelligence.api import router as intelligence_router
+    app.include_router(intelligence_router, prefix="/api/v1/intelligence", tags=["Prediction Intelligence"])
+    logger.info("Prediction Intelligence API mounted")
+except ImportError as e:
+    logger.warning(f"Prediction Intelligence not loaded: {e}")
+
 
 # ── WebSocket endpoint ──────────────────────────────────────────────
 @app.websocket("/ws/live")
