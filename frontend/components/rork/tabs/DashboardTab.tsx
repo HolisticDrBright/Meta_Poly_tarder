@@ -101,17 +101,23 @@ export default function DashboardTab() {
       });
   }, [markets]);
 
-  const activeTrades: ActiveTrade[] = useMemo(() => {
-    return positions.slice(0, 6).map((p: any) => ({
-      id: p.id?.toString() || p.market_id,
-      title: p.question || "Position",
-      direction: (p.side || "YES") as "YES" | "NO",
-      entryPrice: p.entry_price || 0,
-      currentPrice: p.current_price || p.entry_price || 0,
-      pnl: p.pnl || 0,
-      size: Math.round(p.size_usdc || 0),
-      enteredAt: p.opened_at ? new Date(p.opened_at).toLocaleDateString() : "",
-    }));
+  const activeTrades = useMemo(() => {
+    return positions.slice(0, 6).map((p: any) => {
+      const entry = p.entry_price || 0;
+      const current = p.current_price || entry;
+      const edgePct = entry > 0 ? ((current - entry) / entry * 100) : 0;
+      return {
+        id: p.id?.toString() || p.market_id,
+        title: p.question || "Position",
+        direction: (p.side || "YES") as "YES" | "NO",
+        entryPrice: entry,
+        currentPrice: current,
+        pnl: p.pnl || 0,
+        size: Math.round(p.size_usdc || 0),
+        enteredAt: p.opened_at ? new Date(p.opened_at).toLocaleDateString() : "",
+        edge: +edgePct.toFixed(1),
+      };
+    });
   }, [positions]);
 
   const quickStats = [
@@ -225,6 +231,7 @@ export default function DashboardTab() {
                 <div className="flex justify-between pt-2" style={{ borderTop: `1px solid ${Colors.surfaceBorder}` }}>
                   <div><div className="text-[9px] font-semibold uppercase tracking-wider" style={{ color: Colors.textTertiary }}>Entry</div><div className="text-xs font-semibold font-mono" style={{ color: Colors.textSecondary }}>{(t.entryPrice * 100).toFixed(0)}&cent;</div></div>
                   <div><div className="text-[9px] font-semibold uppercase tracking-wider" style={{ color: Colors.textTertiary }}>Now</div><div className="flex items-center gap-1"><span className="text-xs font-semibold font-mono" style={{ color: isUp ? Colors.green : Colors.coral }}>{(t.currentPrice * 100).toFixed(0)}&cent;</span></div></div>
+                  <div><div className="text-[9px] font-semibold uppercase tracking-wider" style={{ color: Colors.textTertiary }}>Edge</div><div className="text-xs font-bold font-mono" style={{ color: t.edge >= 0 ? Colors.cyan : Colors.coral }}>{t.edge >= 0 ? "+" : ""}{t.edge}%</div></div>
                   <div><div className="text-[9px] font-semibold uppercase tracking-wider" style={{ color: Colors.textTertiary }}>Size</div><div className="text-xs font-semibold font-mono" style={{ color: Colors.textSecondary }}>${t.size.toLocaleString()}</div></div>
                   <div><div className="text-[9px] font-semibold uppercase tracking-wider" style={{ color: Colors.textTertiary }}>Opened</div><div className="text-xs font-semibold font-mono" style={{ color: Colors.textSecondary }}>{t.enteredAt}</div></div>
                 </div>
