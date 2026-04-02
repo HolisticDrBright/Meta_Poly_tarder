@@ -46,7 +46,7 @@ class ClosePositionRequest(BaseModel):
     market_id: str
 
 
-# Lazy-init DuckDB for trade log queries
+# Lazy-init DuckDB for trade log queries — use read-only mode to avoid lock conflicts
 _duckdb = None
 
 def _get_duckdb():
@@ -56,6 +56,20 @@ def _get_duckdb():
         _duckdb = DuckDBStorage()
         _duckdb.connect()
     return _duckdb
+
+
+def _get_duckdb_readonly():
+    """Get a read-only DuckDB connection that doesn't conflict with the scheduler's write lock."""
+    import duckdb
+    from pathlib import Path
+    db_path = Path("data/analytics.duckdb")
+    if not db_path.exists():
+        return None
+    try:
+        conn = duckdb.connect(str(db_path), read_only=True)
+        return conn
+    except Exception:
+        return None
 
 
 @router.get("/positions")
@@ -106,44 +120,71 @@ async def trade_log(
     limit: int = 200,
     filter: str = "all",  # "all", "wins", "losses"
 ):
-    """
-    Get the full trade log with win/loss history.
-
-    Every open and close is recorded with timestamp, market name,
-    side, price, size, strategy, P&L, and exit reason.
-    """
-    db = _get_duckdb()
-    trades = db.get_trade_log(
-        limit=limit,
-        wins_only=(filter == "wins"),
-        losses_only=(filter == "losses"),
-    )
-    # Convert timestamps to strings for JSON
-    for t in trades:
-        if t.get("ts"):
-            t["ts"] = str(t["ts"])
-    return {"trades": trades, "count": len(trades)}
+    """Get the full trade log with win/loss history."""
+    conn = _get_duckdb_readonly()
+    if not conn:
+        return {"trades": [], "count": 0}
+    try:
+        where = ""
+        if filter == "wins":
+            where = "WHERE pnl > 0"
+        elif filter == "losses":
+            where = "WHERE pnl < 0"
+        result = conn.execute(
+            f"SELECT ts, market_id, question, side, price, size_usdc, strategy, "
+            f"paper, pnl, trade_type, exit_reason FROM trades {where} "
+            f"ORDER BY ts DESC LIMIT ?",
+            [limit],
+        )
+        cols = [desc[0] for desc in result.description]
+        trades = [dict(zip(cols, row)) for row in result.fetchall()]
+        for t in trades:
+            if t.get("ts"):
+                t["ts"] = str(t["ts"])
+        return {"trades": trades, "count": len(trades)}
+    except Exception as e:
+        logger.error(f"Trade log query failed: {e}")
+        return {"trades": [], "count": 0, "error": str(e)}
+    finally:
+        conn.close()
 
 
 @router.get("/trade-stats")
 async def trade_stats():
-    """
-    Get aggregate win/loss statistics from the trade log.
-
-    Returns: total_trades, wins, losses, breakeven, total_pnl,
-    gross_profit, gross_loss, avg_pnl, best_trade, worst_trade, win_rate.
-    """
-    db = _get_duckdb()
-    stats = db.get_trade_stats()
-    if stats:
-        total = stats.get("total_trades", 0)
-        wins = stats.get("wins", 0)
-        stats["win_rate"] = (wins / total * 100) if total > 0 else 0
-        stats["profit_factor"] = (
-            abs(stats.get("gross_profit", 0) / stats.get("gross_loss", 1))
-            if stats.get("gross_loss", 0) != 0 else float("inf")
-        )
-    return stats or {}
+    """Get aggregate win/loss statistics from the trade log."""
+    conn = _get_duckdb_readonly()
+    if not conn:
+        return {}
+    try:
+        result = conn.execute("""
+            SELECT
+                COUNT(*) as total_trades,
+                COUNT(CASE WHEN pnl > 0 THEN 1 END) as wins,
+                COUNT(CASE WHEN pnl < 0 THEN 1 END) as losses,
+                COUNT(CASE WHEN pnl = 0 THEN 1 END) as breakeven,
+                COALESCE(SUM(pnl), 0) as total_pnl,
+                COALESCE(SUM(CASE WHEN pnl > 0 THEN pnl ELSE 0 END), 0) as gross_profit,
+                COALESCE(SUM(CASE WHEN pnl < 0 THEN pnl ELSE 0 END), 0) as gross_loss,
+                COALESCE(AVG(pnl), 0) as avg_pnl,
+                COALESCE(MAX(pnl), 0) as best_trade,
+                COALESCE(MIN(pnl), 0) as worst_trade
+            FROM trades WHERE trade_type = 'close' OR pnl != 0
+        """)
+        cols = [desc[0] for desc in result.description]
+        rows = result.fetchall()
+        stats = dict(zip(cols, rows[0])) if rows else {}
+        if stats:
+            total = stats.get("total_trades", 0)
+            wins = stats.get("wins", 0)
+            stats["win_rate"] = (wins / total * 100) if total > 0 else 0
+            gl = stats.get("gross_loss", 0)
+            stats["profit_factor"] = abs(stats.get("gross_profit", 0) / gl) if gl != 0 else float("inf")
+        return stats
+    except Exception as e:
+        logger.error(f"Trade stats query failed: {e}")
+        return {"error": str(e)}
+    finally:
+        conn.close()
 
 
 @router.get("/equity-curve")
