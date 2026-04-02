@@ -1,9 +1,9 @@
 version: "3.9"
 
 services:
-  # ── VPN Proxy (gluetun) ────────────────────────────────────────
+  # ── VPN Proxy (gluetun + ProtonVPN WireGuard) ─────────────────
   # All trading traffic routes through this SOCKS5 proxy.
-  # SSH, dashboard, and other services are NOT affected.
+  # SSH, dashboard, nginx, and other services are NOT affected.
   gluetun:
     image: ghcr.io/qdm12/gluetun
     container_name: gluetun
@@ -14,17 +14,16 @@ services:
     ports:
       - "127.0.0.1:1080:1080"   # SOCKS5 proxy (host-only, not exposed externally)
     environment:
-      - VPN_SERVICE_PROVIDER=${VPN_PROVIDER:-custom}
-      - VPN_TYPE=${VPN_TYPE:-openvpn}
-      - OPENVPN_USER=${OPENVPN_USER:-}
-      - OPENVPN_PASSWORD=${OPENVPN_PASSWORD:-}
-      # For WireGuard:
-      # - VPN_TYPE=wireguard
-      # - WIREGUARD_PRIVATE_KEY=${WG_PRIVATE_KEY:-}
-      # - WIREGUARD_ADDRESSES=${WG_ADDRESSES:-}
-      # - SERVER_COUNTRIES=${VPN_COUNTRY:-Netherlands}
-      #
-      # SOCKS5 proxy built into gluetun:
+      # ProtonVPN WireGuard — custom provider mode
+      - VPN_SERVICE_PROVIDER=custom
+      - VPN_TYPE=wireguard
+      - WIREGUARD_PRIVATE_KEY=${WIREGUARD_PRIVATE_KEY}
+      - WIREGUARD_PUBLIC_KEY=${WIREGUARD_PUBLIC_KEY}
+      - WIREGUARD_ADDRESSES=${WIREGUARD_ADDRESSES:-10.2.0.2/32}
+      - VPN_ENDPOINT_IP=${VPN_ENDPOINT_IP}
+      - VPN_ENDPOINT_PORT=${VPN_ENDPOINT_PORT:-51820}
+      - DNS_ADDRESS=${DNS_ADDRESS:-10.2.0.1}
+      # SOCKS5 proxy built into gluetun
       - SOCKS5=on
       - SOCKS5_LISTENING_ADDRESS=:1080
     volumes:
@@ -34,8 +33,8 @@ services:
       test: ["CMD", "wget", "-q", "--spider", "https://ipinfo.io/json"]
       interval: 30s
       timeout: 10s
-      retries: 3
-      start_period: 30s
+      retries: 5
+      start_period: 45s
 
   # ── Backend (FastAPI) ──────────────────────────────────────────
   backend:
