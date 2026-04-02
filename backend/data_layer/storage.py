@@ -93,17 +93,6 @@ class DuckDBStorage:
                 exit_reason VARCHAR DEFAULT ''
             )
         """)
-        # Schema migration: safely check if columns exist before altering
-        # This avoids WAL corruption from failed ALTER statements
-        try:
-            existing_cols = {row[0] for row in self._conn.execute(
-                "SELECT column_name FROM information_schema.columns WHERE table_name = 'trades'"
-            ).fetchall()}
-            for col, default in [("question", "''"), ("trade_type", "'open'"), ("exit_reason", "''")]:
-                if col not in existing_cols:
-                    self._conn.execute(f"ALTER TABLE trades ADD COLUMN {col} VARCHAR DEFAULT {default}")
-        except Exception:
-            pass  # Table might not exist yet (first run) — CREATE TABLE handles it
         self._conn.execute("""
             CREATE TABLE IF NOT EXISTS equity_curve (
                 ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -145,7 +134,17 @@ class DuckDBStorage:
                 list(kwargs.values()),
             )
         except Exception as e:
-            logger.error(f"DuckDB insert_trade failed: {e} — keys={list(kwargs.keys())}")
+            # If columns don't exist in old schema, retry with only base columns
+            try:
+                base_cols = {k: v for k, v in kwargs.items() if k in ("ts", "market_id", "side", "price", "size_usdc", "strategy", "paper", "pnl")}
+                if base_cols:
+                    cols2 = ", ".join(base_cols.keys())
+                    ph2 = ", ".join(["?"] * len(base_cols))
+                    self._conn.execute(f"INSERT INTO trades ({cols2}) VALUES ({ph2})", list(base_cols.values()))
+                else:
+                    logger.error(f"DuckDB insert_trade failed: {e}")
+            except Exception as e2:
+                logger.error(f"DuckDB insert_trade retry failed: {e2}")
 
     def get_trade_log(self, limit: int = 200, wins_only: bool = False, losses_only: bool = False) -> list[dict]:
         """Get trade history with win/loss status."""
