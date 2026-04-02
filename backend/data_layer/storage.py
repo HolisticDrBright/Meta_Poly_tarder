@@ -93,6 +93,12 @@ class DuckDBStorage:
                 exit_reason VARCHAR DEFAULT ''
             )
         """)
+        # Migrate old schema: add columns if they don't exist
+        for col, default in [("question", "''"), ("trade_type", "'open'"), ("exit_reason", "''")]:
+            try:
+                self._conn.execute(f"ALTER TABLE trades ADD COLUMN {col} VARCHAR DEFAULT {default}")
+            except Exception:
+                pass  # Column already exists
         self._conn.execute("""
             CREATE TABLE IF NOT EXISTS equity_curve (
                 ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

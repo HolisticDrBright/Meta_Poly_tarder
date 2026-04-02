@@ -58,7 +58,7 @@ export default function OpportunityCard({
             <div>
               <div className="text-[10px] font-medium uppercase tracking-wider" style={{ color: Colors.textTertiary }}>Price</div>
               <div className="text-[13px] font-semibold font-mono" style={{ color: Colors.textSecondary }}>
-                {(market.currentPrice * 100).toFixed(0)}&cent;
+                {market.currentPrice >= 0.01 ? `${(market.currentPrice * 100).toFixed(0)}¢` : `${(market.currentPrice * 100).toFixed(1)}¢`}
               </div>
             </div>
             <div>

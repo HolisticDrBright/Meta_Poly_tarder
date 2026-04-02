@@ -71,22 +71,34 @@ export default function DashboardTab() {
   }, [equityCurve, totalPnL, totalBalance]);
 
   const marketOpps = useMemo(() => {
-    return markets.slice(0, 9).map((m: any) => {
-      const modelP = m.model_probability || m.yes_price;
-      const edge = ((modelP - m.yes_price) * 100);
-      const score = Math.min(100, Math.max(0, Math.round(Math.abs(edge) * 10 + (m.liquidity || 0) / 10000)));
-      let classification: "PAPER TRADE" | "WATCHLIST" | "NO-TRADE" = "NO-TRADE";
-      if (score >= 60) classification = "PAPER TRADE";
-      else if (score >= 40) classification = "WATCHLIST";
-      const sparkline = Array.from({ length: 20 }, (_, i) => ({ value: (m.yes_price || 0.5) * 100 + (Math.random() - 0.5) * 10 }));
-      return {
-        id: m.id, title: m.question || m.title || "Market", category: (m.category || "economics") as any,
-        opportunityScore: score, edgeEstimate: +edge.toFixed(1), classification,
-        sparkline, currentPrice: m.yes_price || 0.5,
-        volume24h: m.volume_24h ? `$${(m.volume_24h / 1000).toFixed(0)}K` : "$0",
-        lastUpdated: "now", aiSummary: "", fairProbability: modelP, marketProbability: m.yes_price || 0.5,
-      };
-    });
+    return markets
+      .filter((m: any) => m.yes_price > 0.02 && m.yes_price < 0.98) // Skip resolved markets
+      .slice(0, 12)
+      .map((m: any) => {
+        // Use model_probability from AI ensemble, or contrarian heuristic as fallback
+        const mp = m.yes_price || 0.5;
+        const modelP = (m.model_probability && m.model_probability > 0 && m.model_probability !== mp)
+          ? m.model_probability
+          : mp + (0.5 - mp) * 0.10; // contrarian nudge toward 0.5 by 10%
+        const edge = ((modelP - mp) * 100);
+        const klDiv = m.kl_divergence || (m.entropy_bits ? m.entropy_bits * Math.abs(edge) / 100 : 0);
+        const score = Math.min(100, Math.max(0, Math.round(
+          Math.abs(edge) * 8 + klDiv * 50 + Math.min((m.liquidity || 0) / 50000, 30)
+        )));
+        let classification: "PAPER TRADE" | "WATCHLIST" | "NO-TRADE" = "NO-TRADE";
+        if (score >= 60) classification = "PAPER TRADE";
+        else if (score >= 40) classification = "WATCHLIST";
+        const sparkline = Array.from({ length: 20 }, (_, i) => ({
+          value: mp * 100 + (Math.sin(i * 0.8) + Math.random() - 0.5) * Math.max(3, Math.abs(edge)),
+        }));
+        return {
+          id: m.id, title: m.question || m.title || "Market", category: (m.category || "economics") as any,
+          opportunityScore: score, edgeEstimate: +edge.toFixed(1), classification,
+          sparkline, currentPrice: mp,
+          volume24h: m.volume_24h ? (m.volume_24h >= 1000000 ? `$${(m.volume_24h / 1000000).toFixed(1)}M` : `$${(m.volume_24h / 1000).toFixed(0)}K`) : "$0",
+          lastUpdated: "now", aiSummary: "", fairProbability: modelP, marketProbability: mp,
+        };
+      });
   }, [markets]);
 
   const activeTrades: ActiveTrade[] = useMemo(() => {

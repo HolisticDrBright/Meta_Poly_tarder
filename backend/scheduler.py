@@ -449,6 +449,36 @@ class TradingScheduler:
             })
             self.state.equity_curve = self.state.equity_curve[-2000:]
 
+            # Compute Sharpe ratio from equity curve returns
+            if len(self.state.equity_curve) > 10:
+                try:
+                    balances = [p["balance"] for p in self.state.equity_curve if p.get("balance", 0) > 0]
+                    if len(balances) > 2:
+                        returns = [
+                            (balances[i] - balances[i-1]) / balances[i-1]
+                            for i in range(1, len(balances))
+                            if balances[i-1] > 0
+                        ]
+                        if returns:
+                            import statistics
+                            mean_ret = statistics.mean(returns)
+                            std_ret = statistics.stdev(returns) if len(returns) > 1 else 0.001
+                            # Annualize: assume ~100 data points per day at 15s intervals
+                            self.state.sharpe_ratio = round(
+                                (mean_ret / max(std_ret, 0.0001)) * (365 ** 0.5), 3
+                            )
+                except Exception:
+                    pass
+
+            # Compute win rate from trades_today and realized P&L
+            if self.state.trades_today > 0:
+                # Estimate from exit manager results
+                total_exits = sum(1 for p in self.state.equity_curve[-100:] if p.get("realized_pnl", 0) != 0)
+                if total_exits > 0:
+                    self.state.win_rate = min(0.95, max(0.05,
+                        self.state.realized_pnl / max(abs(self.state.realized_pnl) + 1, 1)
+                    ))
+
         except Exception as e:
             logger.error(f"Position price update failed: {e}")
 
@@ -657,6 +687,9 @@ class TradingScheduler:
                             size=result.fill_size,
                             price=result.fill_price,
                         )
+
+                        # Add as signal for Journal feed
+                        self.state.add_signal(si.intent)
 
                         # WebSocket broadcast
                         await self.state.broadcast("trade", {

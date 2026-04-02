@@ -52,6 +52,8 @@ async def list_markets(
                 "best_bid": m.best_bid,
                 "best_ask": m.best_ask,
                 "arb_edge": m.arb_edge,
+                "model_probability": m.model_probability,
+                "kl_divergence": m.kl_divergence,
             }
             for m in markets[:limit]
         ]
