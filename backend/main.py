@@ -174,6 +174,13 @@ try:
 except ImportError as e:
     logger.warning(f"Prediction Intelligence not loaded: {e}")
 
+# Live Execution Layer
+try:
+    from execution.api import router as execution_router
+    app.include_router(execution_router, prefix="/api/v1/execution", tags=["Execution"])
+    logger.info("Execution API mounted")
+except ImportError as e:
+    logger.warning(f"Execution API not loaded: {e}")
 
 # ── WebSocket endpoint ──────────────────────────────────────────────
 @app.websocket("/ws/live")
