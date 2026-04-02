@@ -149,6 +149,31 @@ export function fetchJetSignals() {
   return request<{ signals: any[] }>("/api/jet/signals");
 }
 
+// ── Execution ──────────────────────────────────────────────
+
+export function getExecutionMode() {
+  return request<{ mode: string }>("/api/v1/execution/mode");
+}
+
+export function setExecutionMode(mode: "paper" | "live") {
+  return request<any>("/api/v1/execution/mode", {
+    method: "POST",
+    body: JSON.stringify({ mode }),
+  });
+}
+
+export function getExecutionStatus() {
+  return request<any>("/api/v1/execution/status");
+}
+
+export function executionKill() {
+  return request<any>("/api/v1/execution/kill", { method: "POST" });
+}
+
+export function executionResume() {
+  return request<any>("/api/v1/execution/resume", { method: "POST" });
+}
+
 // ── System ─────────────────────────────────────────────────────
 
 export function fetchHealth() {

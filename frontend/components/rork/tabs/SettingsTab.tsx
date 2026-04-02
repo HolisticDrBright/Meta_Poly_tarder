@@ -4,8 +4,7 @@ import { useState, useEffect } from "react";
 import { Bell, Shield, Cpu, Database, RefreshCw, Info, ChevronRight, Zap, AlertTriangle, Power } from "lucide-react";
 import { Colors } from "@/lib/rork-types";
 import { usePortfolioStore } from "@/stores/portfolioStore";
-import { killSwitch, unkill } from "@/lib/api";
-import { apiFetch } from "@/lib/utils";
+import { setExecutionMode, getExecutionStatus, executionKill, executionResume } from "@/lib/api";
 
 function SettingRow({ icon, label, value, hasToggle, toggleValue, onToggle }: {
   icon: React.ReactNode; label: string; value?: string;
@@ -50,7 +49,7 @@ export default function SettingsTab() {
 
   // Fetch execution status on mount
   useEffect(() => {
-    apiFetch<any>("/api/v1/execution/status").then((d) => {
+    getExecutionStatus().then((d) => {
       if (d?.mode) setExecMode(d.mode);
       if (d?.kill_switch !== undefined) setIsKilled(d.kill_switch);
       if (d?.daily_stats) setDailyStats(d.daily_stats);
@@ -59,28 +58,28 @@ export default function SettingsTab() {
 
   const handleModeToggle = async () => {
     if (execMode === "paper") {
-      // Switching to LIVE — show confirmation
       setShowConfirm(true);
     } else {
-      // Switching back to paper
       try {
-        await apiFetch("/api/v1/execution/mode", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: "paper" }) } as any);
-        setExecMode("paper");
+        const resp = await setExecutionMode("paper");
+        if (resp) setExecMode("paper");
       } catch {}
     }
   };
 
   const confirmGoLive = async () => {
     try {
-      await apiFetch("/api/v1/execution/mode", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: "live" }) } as any);
-      setExecMode("live");
-    } catch {}
+      const resp = await setExecutionMode("live");
+      if (resp) setExecMode("live");
+    } catch (e) {
+      console.error("Go live failed:", e);
+    }
     setShowConfirm(false);
   };
 
   const handleKill = async () => {
     try {
-      await killSwitch();
+      await executionKill();
       setIsKilled(true);
       setExecMode("paper");
     } catch {}
@@ -88,7 +87,7 @@ export default function SettingsTab() {
 
   const handleResume = async () => {
     try {
-      await unkill();
+      await executionResume();
       setIsKilled(false);
     } catch {}
   };

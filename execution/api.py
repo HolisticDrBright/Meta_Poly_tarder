@@ -57,15 +57,44 @@ async def set_mode(req: ModeRequest):
     global _orchestrator
     if req.mode not in ("paper", "live"):
         raise HTTPException(400, "Mode must be 'paper' or 'live'")
+
+    # Update the execution orchestrator
     _orchestrator = TradeOrchestrator(mode=req.mode)
+
+    # Update the global system state so the dashboard reflects the change
+    try:
+        from backend.state import system_state
+        system_state.paper_trading = (req.mode == "paper")
+
+        if req.mode == "live":
+            # Reset P&L counters for live tracking
+            system_state.realized_pnl = 0.0
+            system_state.unrealized_pnl = 0.0
+            system_state.trades_today = 0
+            system_state.total_exposure = 0.0
+            # Fetch real wallet balance
+            try:
+                real_balance = await _orchestrator.engine.get_balance()
+                if real_balance > 0:
+                    system_state.balance = real_balance
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     logger.info(f"Execution mode changed to: {req.mode}")
-    return {"mode": req.mode, "status": "active"}
+    return {"mode": req.mode, "status": "active", "paper_trading": req.mode == "paper"}
 
 
 @router.post("/kill")
 async def kill_switch():
     orch = _get_orchestrator()
     result = await orch.emergency_shutdown()
+    try:
+        from backend.state import system_state
+        system_state.paper_trading = True
+    except Exception:
+        pass
     return result
 
 
@@ -80,6 +109,22 @@ async def resume():
 async def get_status():
     orch = _get_orchestrator()
     status = orch.get_status()
+    try:
+        from backend.state import system_state
+        status["paper_trading"] = system_state.paper_trading
+        status["starting_capital"] = orch.safety.config.STARTING_CAPITAL
+
+        # If live mode, fetch real wallet balance
+        if orch.engine.mode == "live":
+            try:
+                real_balance = await orch.engine.get_balance()
+                if real_balance > 0:
+                    status["live_balance"] = real_balance
+                    system_state.balance = real_balance
+            except Exception:
+                pass
+    except Exception:
+        pass
     return status
 
 
