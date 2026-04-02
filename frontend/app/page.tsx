@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import dynamic from "next/dynamic";
-import { LayoutDashboard, BarChart3, Briefcase, BookOpen, Settings } from "lucide-react";
+import { LayoutDashboard, BarChart3, Briefcase, History, BookOpen, Settings } from "lucide-react";
 
 import { useMarkets, usePortfolioStats, usePositions, useSignals } from "@/hooks/useSignals";
 import { useWebSocket } from "@/hooks/useWebSocket";
@@ -14,6 +14,7 @@ import { Colors } from "@/lib/rork-types";
 const DashboardTab = dynamic(() => import("@/components/rork/tabs/DashboardTab"), { ssr: false });
 const MarketsTab = dynamic(() => import("@/components/rork/tabs/MarketsTab"), { ssr: false });
 const PortfolioTab = dynamic(() => import("@/components/rork/tabs/PortfolioTab"), { ssr: false });
+const HistoryTab = dynamic(() => import("@/components/rork/tabs/HistoryTab"), { ssr: false });
 const JournalTab = dynamic(() => import("@/components/rork/tabs/JournalTab"), { ssr: false });
 const SettingsTab = dynamic(() => import("@/components/rork/tabs/SettingsTab"), { ssr: false });
 
@@ -21,6 +22,7 @@ const TABS = [
   { key: "dashboard", label: "Dashboard", Icon: LayoutDashboard },
   { key: "markets", label: "Markets", Icon: BarChart3 },
   { key: "portfolio", label: "Portfolio", Icon: Briefcase },
+  { key: "history", label: "History", Icon: History },
   { key: "journal", label: "Journal", Icon: BookOpen },
   { key: "settings", label: "Settings", Icon: Settings },
 ] as const;
@@ -99,6 +101,7 @@ export default function Page() {
             {tab === "dashboard" && <DashboardTab />}
             {tab === "markets" && <MarketsTab />}
             {tab === "portfolio" && <PortfolioTab />}
+            {tab === "history" && <HistoryTab />}
             {tab === "journal" && <JournalTab />}
             {tab === "settings" && <SettingsTab />}
           </>
