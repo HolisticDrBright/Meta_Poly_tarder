@@ -65,6 +65,9 @@ class SystemState:
     scheduler_running: bool = False
     last_update: Optional[datetime] = None
 
+    # Shared DuckDB reference (set by scheduler, used by API for trade queries)
+    _duckdb: Any = field(default=None, repr=False)
+
     # WebSocket broadcast callback (set by main.py)
     _broadcast_fn: Optional[Callable] = field(default=None, repr=False)
 

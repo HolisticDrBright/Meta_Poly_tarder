@@ -58,18 +58,13 @@ def _get_duckdb():
     return _duckdb
 
 
-def _get_duckdb_readonly():
-    """Get a read-only DuckDB connection that doesn't conflict with the scheduler's write lock."""
-    import duckdb
-    from pathlib import Path
-    db_path = Path("data/analytics.duckdb")
-    if not db_path.exists():
-        return None
-    try:
-        conn = duckdb.connect(str(db_path), read_only=True)
-        return conn
-    except Exception:
-        return None
+def _get_shared_duckdb():
+    """Get the scheduler's shared DuckDB connection from system state."""
+    from backend.state import system_state
+    db = system_state._duckdb
+    if db and db._conn:
+        return db._conn
+    return None
 
 
 @router.get("/positions")
@@ -121,9 +116,9 @@ async def trade_log(
     filter: str = "all",  # "all", "wins", "losses"
 ):
     """Get the full trade log with win/loss history."""
-    conn = _get_duckdb_readonly()
+    conn = _get_shared_duckdb()
     if not conn:
-        return {"trades": [], "count": 0}
+        return {"trades": [], "count": 0, "note": "DuckDB not connected"}
     try:
         where = ""
         if filter == "wins":
@@ -145,16 +140,14 @@ async def trade_log(
     except Exception as e:
         logger.error(f"Trade log query failed: {e}")
         return {"trades": [], "count": 0, "error": str(e)}
-    finally:
-        conn.close()
 
 
 @router.get("/trade-stats")
 async def trade_stats():
     """Get aggregate win/loss statistics from the trade log."""
-    conn = _get_duckdb_readonly()
+    conn = _get_shared_duckdb()
     if not conn:
-        return {}
+        return {"note": "DuckDB not connected"}
     try:
         result = conn.execute("""
             SELECT
@@ -183,8 +176,6 @@ async def trade_stats():
     except Exception as e:
         logger.error(f"Trade stats query failed: {e}")
         return {"error": str(e)}
-    finally:
-        conn.close()
 
 
 @router.get("/equity-curve")

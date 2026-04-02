@@ -728,6 +728,9 @@ class TradingScheduler:
         self.duckdb.connect()
         self.sqlite.connect()
 
+        # Share the DuckDB connection with the API layer for trade queries
+        self.state._duckdb = self.duckdb
+
         # Restore persisted state from previous run
         import asyncio
         try:

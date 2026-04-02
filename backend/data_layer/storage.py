@@ -137,12 +137,15 @@ class DuckDBStorage:
     def insert_trade(self, **kwargs: Any) -> None:
         if self._conn is None:
             return
-        cols = ", ".join(kwargs.keys())
-        placeholders = ", ".join(["?"] * len(kwargs))
-        self._conn.execute(
-            f"INSERT INTO trades ({cols}) VALUES ({placeholders})",
-            list(kwargs.values()),
-        )
+        try:
+            cols = ", ".join(kwargs.keys())
+            placeholders = ", ".join(["?"] * len(kwargs))
+            self._conn.execute(
+                f"INSERT INTO trades ({cols}) VALUES ({placeholders})",
+                list(kwargs.values()),
+            )
+        except Exception as e:
+            logger.error(f"DuckDB insert_trade failed: {e} — keys={list(kwargs.keys())}")
 
     def get_trade_log(self, limit: int = 200, wins_only: bool = False, losses_only: bool = False) -> list[dict]:
         """Get trade history with win/loss status."""
