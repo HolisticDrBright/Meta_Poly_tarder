@@ -3,7 +3,6 @@
 import { useState, useEffect } from "react";
 import { Clock, TrendingUp, TrendingDown, Filter } from "lucide-react";
 import { Colors } from "@/lib/rork-types";
-import { apiFetch } from "@/lib/utils";
 
 interface Trade {
   ts: string;
@@ -44,13 +43,39 @@ export default function HistoryTab() {
     async function load() {
       setLoading(true);
       try {
-        const [logData, statsData] = await Promise.all([
-          apiFetch<{ trades: Trade[] }>(`/api/portfolio/trade-log?limit=200&filter=${filter}`).catch(() => ({ trades: [] })),
-          apiFetch<TradeStats>("/api/portfolio/trade-stats").catch(() => null),
-        ]);
+        // Fetch trade log
+        let logData: { trades: Trade[] } = { trades: [] };
+        try {
+          const resp = await fetch(`/api/portfolio/trade-log?limit=200&filter=${filter}`);
+          if (resp.ok) {
+            logData = await resp.json();
+          } else {
+            console.warn("[History] trade-log response:", resp.status);
+          }
+        } catch (e) {
+          console.warn("[History] trade-log fetch failed:", e);
+        }
+
+        // Fetch trade stats
+        let statsData: TradeStats | null = null;
+        try {
+          const resp = await fetch("/api/portfolio/trade-stats");
+          if (resp.ok) {
+            const data = await resp.json();
+            if (data && data.total_trades !== undefined) {
+              statsData = data;
+            }
+          }
+        } catch (e) {
+          console.warn("[History] trade-stats failed:", e);
+        }
+
+        console.log("[History] Loaded:", logData.trades?.length, "trades");
         setTrades(logData.trades || []);
         if (statsData) setStats(statsData);
-      } catch {}
+      } catch (e) {
+        console.error("[History] load error:", e);
+      }
       setLoading(false);
     }
     load();
