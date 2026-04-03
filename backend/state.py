@@ -176,11 +176,23 @@ class SystemState:
     # ── Stats ───────────────────────────────────────────────────
 
     def get_stats(self) -> dict:
+        # Try to get cumulative P&L from DuckDB if in-memory is lower
+        db_pnl = self.realized_pnl
+        if self._duckdb and self._duckdb._conn:
+            try:
+                rows = self._duckdb._conn.execute(
+                    "SELECT COALESCE(SUM(pnl), 0) as total FROM trades WHERE trade_type = 'close' OR pnl != 0"
+                ).fetchone()
+                if rows and rows[0] and abs(rows[0]) > abs(db_pnl):
+                    db_pnl = rows[0]
+            except Exception:
+                pass
+
         return {
             "balance": self.balance,
             "total_exposure": self.total_exposure,
             "unrealized_pnl": self.unrealized_pnl,
-            "realized_pnl": self.realized_pnl,
+            "realized_pnl": db_pnl,
             "win_rate": self.win_rate,
             "sharpe_ratio": self.sharpe_ratio,
             "max_drawdown": self.max_drawdown,

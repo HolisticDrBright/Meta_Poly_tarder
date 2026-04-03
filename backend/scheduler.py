@@ -595,13 +595,32 @@ class TradingScheduler:
             logger.error(f"State persistence failed: {e}")
 
     async def restore_state(self) -> None:
-        """Restore state from SQLite on startup."""
+        """Restore state from SQLite and DuckDB on startup."""
         try:
+            # Restore from SQLite (saved every 2 minutes)
             equity = self.sqlite.load_strategy_state("__equity__")
             if equity:
                 self.state.balance = equity.get("balance", 10000)
                 self.state.realized_pnl = equity.get("realized_pnl", 0)
-                logger.info(f"Restored equity state: balance=${self.state.balance:.2f}")
+                self.state.trades_today = equity.get("trades_today", 0)
+                logger.info(f"Restored from SQLite: balance=${self.state.balance:.2f}, pnl=${self.state.realized_pnl:.2f}")
+
+            # Also check DuckDB for cumulative P&L from trade records
+            # This is more accurate than the SQLite snapshot if the bot crashed
+            try:
+                trade_pnl = self.duckdb.query(
+                    "SELECT COALESCE(SUM(pnl), 0) as total_pnl, COUNT(*) as total_trades "
+                    "FROM trades WHERE (trade_type = 'close' OR pnl != 0)"
+                )
+                if trade_pnl and trade_pnl[0].get("total_pnl", 0) != 0:
+                    db_pnl = trade_pnl[0]["total_pnl"]
+                    db_trades = trade_pnl[0]["total_trades"]
+                    # Use the larger P&L (DuckDB may have more recent data than SQLite)
+                    if abs(db_pnl) > abs(self.state.realized_pnl):
+                        self.state.realized_pnl = db_pnl
+                        logger.info(f"Restored P&L from DuckDB: ${db_pnl:.2f} ({db_trades} closed trades)")
+            except Exception as e:
+                logger.debug(f"DuckDB P&L restore skipped: {e}")
 
             # Restore positions
             existing = self.sqlite.get_active_positions()
