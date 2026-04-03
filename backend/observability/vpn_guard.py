@@ -79,26 +79,28 @@ class VPNGuard:
             return status
 
         try:
-            connector = aiohttp.TCPConnector(ssl=False)
-            # Use aiohttp-socks for SOCKS5 proxy support
-            try:
-                from aiohttp_socks import ProxyConnector
-                connector = ProxyConnector.from_url(self.proxy_url)
-            except ImportError:
-                # Fallback: try direct connection through proxy env
-                logger.warning(
-                    "aiohttp-socks not installed — using HTTP proxy fallback. "
-                    "Install: pip install aiohttp-socks"
-                )
-                connector = aiohttp.TCPConnector()
+            # Support both HTTP and SOCKS5 proxy URLs
+            proxy_kwarg = {}
+            connector = aiohttp.TCPConnector()
+
+            if self.proxy_url.startswith("socks"):
+                try:
+                    from aiohttp_socks import ProxyConnector
+                    connector = ProxyConnector.from_url(self.proxy_url)
+                except ImportError:
+                    logger.warning("aiohttp-socks not installed for SOCKS5 proxy")
+            elif self.proxy_url.startswith("http"):
+                # HTTP proxy — pass per-request
+                proxy_kwarg["proxy"] = self.proxy_url
 
             async with aiohttp.ClientSession(
                 connector=connector,
-                trust_env=False,  # Prevent DNS leak through system proxy
+                trust_env=False,
             ) as session:
                 async with session.get(
                     self.check_url,
                     timeout=aiohttp.ClientTimeout(total=10),
+                    **proxy_kwarg,
                 ) as resp:
                     data = await resp.json()
 

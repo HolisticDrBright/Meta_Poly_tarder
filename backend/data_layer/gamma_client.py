@@ -133,7 +133,9 @@ class GammaClient:
         await self._limiter.acquire()
         session = await self._get_session()
         url = f"{self.base_url}{path}"
-        async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+        from backend.data_layer.proxy import get_proxy_url
+        proxy = get_proxy_url()
+        async with session.get(url, params=params, proxy=proxy, timeout=aiohttp.ClientTimeout(total=15)) as resp:
             resp.raise_for_status()
             return await resp.json()
 

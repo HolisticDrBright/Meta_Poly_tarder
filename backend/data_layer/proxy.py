@@ -1,12 +1,12 @@
 """
 Proxy-aware aiohttp session factory.
 
-All HTTP clients in the system should use get_proxied_session()
-instead of creating raw aiohttp.ClientSession(). This ensures
-all traffic goes through the SOCKS5 proxy when VPN_REQUIRED=true.
+All HTTP clients use get_proxied_session() instead of raw aiohttp.ClientSession().
+Supports both HTTP proxy (gluetun default) and SOCKS5 proxy.
 
-If aiohttp-socks is not installed or PROXY_URL is not set,
-falls back to a direct connection.
+When PROXY_URL starts with http:// → uses aiohttp's native proxy support.
+When PROXY_URL starts with socks5:// → uses aiohttp-socks ProxyConnector.
+When PROXY_URL is empty → direct connection.
 """
 
 from __future__ import annotations
@@ -33,43 +33,47 @@ def configure_proxy(proxy_url: str = "", vpn_required: bool = False) -> None:
         logger.warning("VPN_REQUIRED=true but no PROXY_URL set!")
 
 
-def get_connector() -> aiohttp.BaseConnector:
-    """
-    Get an aiohttp connector that routes through the proxy if configured.
-
-    Returns a ProxyConnector (aiohttp-socks) when proxy is set,
-    or a regular TCPConnector as fallback.
-    """
-    if _proxy_url:
-        try:
-            from aiohttp_socks import ProxyConnector
-            return ProxyConnector.from_url(_proxy_url)
-        except ImportError:
-            if _vpn_required:
-                raise RuntimeError(
-                    "VPN_REQUIRED=true but aiohttp-socks is not installed. "
-                    "Run: pip install aiohttp-socks"
-                )
-            logger.warning("aiohttp-socks not installed — using direct connection")
-
-    return aiohttp.TCPConnector()
+def _is_http_proxy() -> bool:
+    """Check if the configured proxy is HTTP (not SOCKS5)."""
+    return _proxy_url is not None and _proxy_url.startswith("http")
 
 
 def get_proxied_session(**kwargs) -> aiohttp.ClientSession:
     """
     Create an aiohttp session that routes through the proxy.
 
-    Usage:
-        session = get_proxied_session()
-        async with session.get(url) as resp:
-            ...
-        await session.close()
-
-    IMPORTANT: trust_env=False prevents DNS leak through system proxy.
+    HTTP proxy: uses aiohttp's native proxy support (no extra package needed).
+    SOCKS5 proxy: uses aiohttp-socks ProxyConnector.
+    No proxy: direct connection.
     """
-    connector = get_connector()
+    if _proxy_url and _proxy_url.startswith("socks"):
+        # SOCKS5 proxy — needs aiohttp-socks
+        try:
+            from aiohttp_socks import ProxyConnector
+            connector = ProxyConnector.from_url(_proxy_url)
+            return aiohttp.ClientSession(
+                connector=connector,
+                trust_env=False,
+                **kwargs,
+            )
+        except ImportError:
+            if _vpn_required:
+                raise RuntimeError(
+                    "VPN_REQUIRED=true with SOCKS5 proxy but aiohttp-socks not installed. "
+                    "Run: pip install aiohttp-socks"
+                )
+            logger.warning("aiohttp-socks not installed — falling back to direct")
+
+    # HTTP proxy or no proxy — aiohttp handles HTTP proxies natively
+    # The proxy URL is passed per-request, not at session level
     return aiohttp.ClientSession(
-        connector=connector,
-        trust_env=False,  # Critical: prevents DNS leak
+        trust_env=False,
         **kwargs,
     )
+
+
+def get_proxy_url() -> Optional[str]:
+    """Get the current proxy URL for use in per-request proxy parameter."""
+    if _proxy_url and _proxy_url.startswith("http"):
+        return _proxy_url
+    return None
