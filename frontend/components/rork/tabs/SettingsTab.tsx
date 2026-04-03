@@ -46,6 +46,7 @@ export default function SettingsTab() {
   const [isKilled, setIsKilled] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const [dailyStats, setDailyStats] = useState<any>(null);
+  const [statusMsg, setStatusMsg] = useState("");
 
   // Fetch execution status on mount
   useEffect(() => {
@@ -60,28 +61,54 @@ export default function SettingsTab() {
     if (execMode === "paper") {
       setShowConfirm(true);
     } else {
-      try {
-        const resp = await setExecutionMode("paper");
-        if (resp) setExecMode("paper");
-      } catch {}
+      await handleModeToggleToPaper();
     }
   };
 
   const confirmGoLive = async () => {
+    setStatusMsg("Switching to LIVE...");
     try {
       const resp = await setExecutionMode("live");
-      if (resp) setExecMode("live");
-    } catch (e) {
-      console.error("Go live failed:", e);
+      if (resp) {
+        setExecMode("live");
+        // Update the portfolio store so header updates immediately
+        usePortfolioStore.setState({
+          stats: { ...stats, paper_trading: false, balance: resp.live_balance || stats.balance }
+        });
+        setStatusMsg("LIVE MODE ACTIVE");
+      } else {
+        setStatusMsg("Failed — no response");
+      }
+    } catch (e: any) {
+      setStatusMsg(`Failed: ${e?.message || "unknown error"}`);
     }
     setShowConfirm(false);
   };
 
+  const handleModeToggleToPaper = async () => {
+    setStatusMsg("Switching to PAPER...");
+    try {
+      const resp = await setExecutionMode("paper");
+      if (resp) {
+        setExecMode("paper");
+        usePortfolioStore.setState({
+          stats: { ...stats, paper_trading: true }
+        });
+        setStatusMsg("PAPER MODE ACTIVE");
+      }
+    } catch {}
+  };
+
   const handleKill = async () => {
+    setStatusMsg("Activating kill switch...");
     try {
       await executionKill();
       setIsKilled(true);
       setExecMode("paper");
+      usePortfolioStore.setState({
+        stats: { ...stats, paper_trading: true }
+      });
+      setStatusMsg("KILL SWITCH ACTIVATED");
     } catch {}
   };
 
@@ -128,6 +155,17 @@ export default function SettingsTab() {
                 <AlertTriangle size={14} color={Colors.coral} />
                 <span className="text-xs font-bold" style={{ color: Colors.coral }}>KILL SWITCH ACTIVE — All trading halted</span>
               </div>
+            </div>
+          )}
+
+          {/* Status message */}
+          {statusMsg && (
+            <div className="p-2 rounded-lg text-center text-xs font-bold font-mono"
+              style={{
+                backgroundColor: statusMsg.includes("LIVE") ? Colors.greenDim : statusMsg.includes("FAIL") || statusMsg.includes("KILL") ? Colors.coralDim : Colors.cyanDim,
+                color: statusMsg.includes("LIVE") ? Colors.green : statusMsg.includes("FAIL") || statusMsg.includes("KILL") ? Colors.coral : Colors.cyan,
+              }}>
+              {statusMsg}
             </div>
           )}
 
