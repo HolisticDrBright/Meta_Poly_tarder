@@ -17,6 +17,12 @@ from __future__ import annotations
 import math
 from typing import Optional
 
+from backend.quant.regime import classify as classify_regime
+from backend.quant.sizing import (
+    ev_gate_passes,
+    kelly_size_usdc,
+    regime_allows_strategy,
+)
 from backend.strategies.base import (
     MarketState,
     OrderIntent,
@@ -71,12 +77,16 @@ class ThetaHarvester(Strategy):
         base_size_usdc: float = 25,
         max_size_usdc: float = 100,
         min_confidence: float = 0.7,
+        bankroll: float = 300.0,
+        kelly_fraction_mult: float = 0.25,
     ) -> None:
         self.min_theta_edge = min_theta_edge
         self.max_resolution_hours = max_resolution_hours
         self.base_size_usdc = base_size_usdc
         self.max_size_usdc = max_size_usdc
         self.min_confidence = min_confidence
+        self.bankroll = bankroll
+        self.kelly_fraction_mult = kelly_fraction_mult
 
     async def evaluate(self, market_state: MarketState) -> Optional[OrderIntent]:
         hours = market_state.hours_to_close
@@ -84,6 +94,11 @@ class ThetaHarvester(Strategy):
         if hours > self.max_resolution_hours:
             return None
         if hours <= 0:
+            return None
+
+        # Regime gate — theta harvester is designed for resolution-cliff markets
+        regime_call = classify_regime(market_state)
+        if not regime_allows_strategy(regime_call.regime, self.name):
             return None
 
         mp = market_state.yes_price
@@ -96,12 +111,15 @@ class ThetaHarvester(Strategy):
             side = Side.NO
             price = market_state.no_price
             edge = mp  # distance from 0
+            # Our fair value for the NO token itself
+            fair_for_side = 1.0 - fair_price  # = 1.0
         elif mp > 0.80:
             # Likely resolves YES → already priced near 1
             fair_price = 1.0
             side = Side.YES
             price = mp
             edge = 1.0 - mp  # distance from 1
+            fair_for_side = fair_price  # = 1.0
         else:
             # Mid-range: no clear theta edge
             return None
@@ -109,11 +127,27 @@ class ThetaHarvester(Strategy):
         if edge < self.min_theta_edge:
             return None
 
+        # EV gate on the theta trade direction
+        if not ev_gate_passes(
+            fair_probability=fair_for_side,
+            market_price=price,
+            spread=market_state.spread,
+        ):
+            return None
+
         theta = compute_theta(fair_price, mp, hours)
         urgency = classify_urgency(hours)
         multiplier = URGENCY_SIZE_MULTIPLIER[urgency]
 
-        size = min(self.base_size_usdc * multiplier, self.max_size_usdc)
+        # Kelly size scaled by urgency multiplier
+        kelly_size = kelly_size_usdc(
+            fair_probability=fair_for_side,
+            market_price=price,
+            bankroll=self.bankroll,
+            kelly_fraction_multiplier=self.kelly_fraction_mult,
+            max_trade_usdc=self.max_size_usdc,
+        )
+        size = min(kelly_size * multiplier, self.max_size_usdc)
         if size < 1.0:
             return None
 

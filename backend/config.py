@@ -38,6 +38,7 @@ class TradingConfig:
     relayer_api_key: str = os.getenv("POLYMARKET_RELAYER_API_KEY", "")
     signature_type: int = _int(os.getenv("SIGNATURE_TYPE"), 0)
     paper_trading: bool = _bool(os.getenv("PAPER_TRADING"), True)
+    starting_capital: float = _float(os.getenv("STARTING_CAPITAL"), 300.0)
 
 
 @dataclass(frozen=True)

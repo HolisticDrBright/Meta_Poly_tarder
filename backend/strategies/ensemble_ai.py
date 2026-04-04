@@ -302,6 +302,14 @@ class EnsembleAI(Strategy):
         )
 
     async def evaluate(self, market_state: MarketState) -> Optional[OrderIntent]:
+        # Regime gate — ensemble is most useful in information-driven markets
+        from backend.quant.regime import classify as classify_regime
+        from backend.quant.sizing import ev_gate_passes, regime_allows_strategy
+
+        regime_call = classify_regime(market_state)
+        if not regime_allows_strategy(regime_call.regime, self.name):
+            return None
+
         result = await self.run_ensemble(market_state)
 
         if result.recommended_action == "HOLD":
@@ -313,6 +321,22 @@ class EnsembleAI(Strategy):
         if edge < self.min_edge:
             return None
 
+        side = Side.YES if result.recommended_action == "BUY_YES" else Side.NO
+        price = market_state.yes_price if side == Side.YES else market_state.no_price
+
+        # Build (fair, market) pair in the direction we're actually trading
+        # for the EV gate. For NO side we compare 1-ensemble_p to no_price.
+        fair_for_side = (
+            result.ensemble_probability if side == Side.YES
+            else (1.0 - result.ensemble_probability)
+        )
+        if not ev_gate_passes(
+            fair_probability=fair_for_side,
+            market_price=price,
+            spread=market_state.spread,
+        ):
+            return None
+
         # Kelly sizing
         from backend.quant.entropy import quarter_kelly
 
@@ -320,9 +344,6 @@ class EnsembleAI(Strategy):
         size = min(abs(f) * self.bankroll, self.max_trade_usdc)
         if size < 1.0:
             return None
-
-        side = Side.YES if result.recommended_action == "BUY_YES" else Side.NO
-        price = market_state.yes_price if side == Side.YES else market_state.no_price
 
         return OrderIntent(
             strategy=self.name,

@@ -21,6 +21,12 @@ from backend.quant.avellaneda_math import (
     order_flow_imbalance,
     vpin,
 )
+from backend.quant.regime import classify as classify_regime, Regime
+from backend.quant.sizing import (
+    ev_gate_passes,
+    kelly_size_usdc,
+    regime_allows_strategy,
+)
 from backend.strategies.base import (
     MarketState,
     OrderIntent,
@@ -58,6 +64,9 @@ class AvellanedaStoikovMM(Strategy):
         min_hours_to_close: float = 48,
         max_inventory: float = 500,
         quote_size_usdc: float = 25,
+        bankroll: float = 300.0,
+        kelly_fraction_mult: float = 0.25,
+        max_trade_usdc: float = 30.0,
     ) -> None:
         self.gamma = gamma
         self.kappa = kappa
@@ -66,7 +75,12 @@ class AvellanedaStoikovMM(Strategy):
         self.min_liquidity = min_liquidity
         self.min_hours_to_close = min_hours_to_close
         self.max_inventory = max_inventory
+        # Legacy flat size — retained only as a fallback when Kelly can't
+        # size (no edge). New trades are Kelly-sized.
         self.quote_size_usdc = quote_size_usdc
+        self.bankroll = bankroll
+        self.kelly_fraction_mult = kelly_fraction_mult
+        self.max_trade_usdc = max_trade_usdc
         self._states: dict[str, MMState] = {}
 
     def _get_state(self, market_id: str) -> MMState:
@@ -104,6 +118,14 @@ class AvellanedaStoikovMM(Strategy):
         if not self._passes_filters(market_state):
             return None
 
+        # Regime gate: only run A-S in regimes where spread capture has edge.
+        # Consensus-grind = A-S's natural habitat (range-bound, tight books).
+        # Information-driven = skip (direction matters, not spread).
+        # Resolution-cliff / illiquid-noise = skip.
+        regime_call = classify_regime(market_state)
+        if not regime_allows_strategy(regime_call.regime, self.name):
+            return None
+
         state = self._get_state(market_state.market_id)
 
         # VPIN check
@@ -136,20 +158,44 @@ class AvellanedaStoikovMM(Strategy):
             kappa=self.kappa,
         )
 
-        # Emit the side that reduces inventory. On Polymarket both YES and
-        # NO are buy-only; "selling YES" really means buying NO. We quote
-        # tight around the actual market price, not a synthetic mid.
+        # Side selection + fair-value framing. For A-S the "fair value" is
+        # the inventory-skewed reservation price from compute_quotes, and
+        # the "market price" is the real current token price. If we're
+        # short (inventory<0) we want to buy YES; if long/neutral we want
+        # to buy NO (the equivalent of selling YES exposure).
         if state.inventory >= 0:
-            # Long or neutral → lean toward buying NO (which is equivalent
-            # to selling YES exposure). Price NO near its real market
-            # price, not off-book.
             side = Side.NO
-            price = max(0.02, min(0.98, market_state.no_price))
+            market_price = max(0.02, min(0.98, market_state.no_price))
+            # For NO side, the reservation price is 1 - r in YES-space.
+            fair_p = max(0.02, min(0.98, 1.0 - quotes.reservation_price))
         else:
-            # Short → lean toward buying YES near its real market price.
             side = Side.YES
-            price = max(0.02, min(0.98, market_state.yes_price))
+            market_price = max(0.02, min(0.98, market_state.yes_price))
+            fair_p = max(0.02, min(0.98, quotes.reservation_price))
 
+        # EV gate: only trade when the edge beats fees + half-spread + slippage.
+        # This is the biggest single filter — most A-S opportunities on
+        # Polymarket are structurally negative-EV after fees.
+        if not ev_gate_passes(
+            fair_probability=fair_p,
+            market_price=market_price,
+            spread=market_state.spread,
+        ):
+            return None
+
+        # Kelly position sizing — bet proportional to edge, not flat.
+        # Replaces the old flat $25/trade that was blowing up the risk budget.
+        size_usdc = kelly_size_usdc(
+            fair_probability=fair_p,
+            market_price=market_price,
+            bankroll=self.bankroll,
+            kelly_fraction_multiplier=self.kelly_fraction_mult,
+            max_trade_usdc=self.max_trade_usdc,
+        )
+        if size_usdc <= 0:
+            return None
+
+        edge_bps = (fair_p - market_price) * 10000
         return OrderIntent(
             strategy=self.name,
             market_id=market_state.market_id,
@@ -157,13 +203,14 @@ class AvellanedaStoikovMM(Strategy):
             question=market_state.question,
             side=side,
             order_type=OrderType.LIMIT,
-            price=price,
-            size_usdc=self.quote_size_usdc,
-            confidence=0.5,
+            price=market_price,
+            size_usdc=size_usdc,
+            confidence=min(0.95, abs(fair_p - market_price) / 0.05),
             reason=(
-                f"A-S MM: r={quotes.reservation_price:.4f}, "
-                f"bid={quotes.bid:.4f}, ask={quotes.ask:.4f}, "
-                f"spread={quotes.spread_bps:.1f}bps, inv={state.inventory:.1f}"
+                f"A-S MM [{regime_call.regime.value}]: fair={fair_p:.4f} "
+                f"mkt={market_price:.4f} edge={edge_bps:+.0f}bps "
+                f"size=${size_usdc:.2f} r={quotes.reservation_price:.4f} "
+                f"inv={state.inventory:.1f}"
             ),
         )
 

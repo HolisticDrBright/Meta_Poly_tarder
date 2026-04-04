@@ -58,22 +58,33 @@ class TradingScheduler:
         )
         self.data_api = DataAPIClient()
 
-        # Strategies
+        # Strategies — Kelly sizing uses the real starting capital and
+        # the risk engine's per-trade cap, not the legacy $10k/$150 defaults.
+        _bankroll = settings.trading.starting_capital
+        _max_trade = settings.risk.max_trade_size_usdc
+        _kelly_mult = settings.quant.kelly_fraction
         self.entropy = EntropyScreener(
             entropy_threshold=settings.quant.entropy_threshold,
             efficiency_max=settings.quant.entropy_efficiency_max,
-            kelly_fraction=settings.quant.kelly_fraction,
-            bankroll=10000,
-            max_trade_usdc=settings.risk.max_trade_size_usdc,
+            kelly_fraction=_kelly_mult,
+            bankroll=_bankroll,
+            max_trade_usdc=_max_trade,
         )
         self.avellaneda = AvellanedaStoikovMM(
             gamma=settings.quant.as_gamma,
             kappa=settings.quant.as_kappa,
             session_hours=settings.quant.as_session_hours,
             vpin_threshold=settings.quant.vpin_pause_threshold,
+            bankroll=_bankroll,
+            kelly_fraction_mult=_kelly_mult,
+            max_trade_usdc=_max_trade,
         )
         self.arb = ArbScanner(min_arb_edge=settings.quant.min_arb_edge)
-        self.theta = ThetaHarvester()
+        self.theta = ThetaHarvester(
+            bankroll=_bankroll,
+            kelly_fraction_mult=_kelly_mult,
+            max_size_usdc=_max_trade,
+        )
         self.copy = CopyTrader(
             default_ratio=settings.copy.ratio,
             max_size_usdc=settings.copy.max_size_usdc,

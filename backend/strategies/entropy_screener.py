@@ -21,6 +21,8 @@ from backend.quant.entropy import (
     quarter_kelly,
     score_market,
 )
+from backend.quant.regime import classify as classify_regime
+from backend.quant.sizing import ev_gate_passes, regime_allows_strategy
 from backend.strategies.base import (
     MarketState,
     OrderIntent,
@@ -73,6 +75,12 @@ class EntropyScreener(Strategy):
         if not self._passes_filters(market_state):
             return None
 
+        # Regime gate — entropy screener is allowed in information-driven
+        # and consensus-grind, skipped in resolution-cliff and illiquid-noise.
+        regime_call = classify_regime(market_state)
+        if not regime_allows_strategy(regime_call.regime, self.name):
+            return None
+
         mp = market_state.yes_price
         model_p = market_state.model_probability
 
@@ -87,18 +95,31 @@ class EntropyScreener(Strategy):
         if r > self.efficiency_max:
             return None
 
+        # Pick side first so EV gate uses the correct (fair, market) pair
+        if model_p > mp:
+            side = Side.YES
+            price = mp
+            fair_p = model_p
+            market_p = mp
+        else:
+            side = Side.NO
+            price = market_state.no_price
+            fair_p = 1.0 - model_p
+            market_p = market_state.no_price
+
+        # EV gate: skip trades that don't beat fees + half-spread + slippage
+        if not ev_gate_passes(
+            fair_probability=fair_p,
+            market_price=market_p,
+            spread=market_state.spread,
+        ):
+            return None
+
         f_quarter = quarter_kelly(model_p, mp)
         size = min(abs(f_quarter) * self.bankroll, self.max_trade_usdc)
 
         if size < 1.0:
             return None
-
-        if model_p > mp:
-            side = Side.YES
-            price = mp
-        else:
-            side = Side.NO
-            price = market_state.no_price
 
         h = market_entropy(mp)
 
