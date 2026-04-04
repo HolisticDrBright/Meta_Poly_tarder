@@ -4,14 +4,21 @@ Admin endpoints.
 Destructive operations live here. Every endpoint requires a confirmation
 token in the request body so accidental clicks can't wipe real data.
 
-The token is generated fresh per backend restart and logged once at INFO
-level — grab it from the logs the first time you need it.
+The token is generated fresh per backend restart and written to:
+  - stdout via print()  (reliable even before uvicorn logger is ready)
+  - logger.info         (shows up in data/logs/backend.log once logging wakes up)
+  - data/admin.token    (mode 600 file, grab with `cat data/admin.token`)
+
+The file is the most reliable source. It's wiped on every restart.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import secrets
+import sys
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -22,7 +29,25 @@ router = APIRouter()
 
 # Per-process confirmation token. Rotates on every restart.
 _ADMIN_TOKEN: str = secrets.token_urlsafe(24)
+
+# 1. stdout — always reaches the user's tee'd log regardless of logger state.
+print(f"ADMIN TOKEN (rotates on restart): {_ADMIN_TOKEN}", file=sys.stdout, flush=True)
+
+# 2. logger — shows up in structured logs once uvicorn is running.
 logger.info(f"ADMIN TOKEN (rotates on restart): {_ADMIN_TOKEN}")
+
+# 3. File — the most reliable retrieval path for the user.
+try:
+    _token_path = Path(__file__).resolve().parents[2] / "data" / "admin.token"
+    _token_path.parent.mkdir(parents=True, exist_ok=True)
+    _token_path.write_text(_ADMIN_TOKEN)
+    try:
+        os.chmod(_token_path, 0o600)
+    except Exception:
+        pass
+    print(f"ADMIN TOKEN written to: {_token_path}", file=sys.stdout, flush=True)
+except Exception as _e:
+    print(f"ADMIN TOKEN file write failed: {_e}", file=sys.stderr, flush=True)
 
 
 class ResetRequest(BaseModel):
