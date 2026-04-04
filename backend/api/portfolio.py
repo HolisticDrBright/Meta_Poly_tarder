@@ -167,11 +167,27 @@ async def trade_stats():
         rows = result.fetchall()
         stats = dict(zip(cols, rows[0])) if rows else {}
         if stats:
-            total = stats.get("total_trades", 0)
-            wins = stats.get("wins", 0)
-            stats["win_rate"] = (wins / total * 100) if total > 0 else 0
-            gl = stats.get("gross_loss", 0)
-            stats["profit_factor"] = abs(stats.get("gross_profit", 0) / gl) if gl != 0 else float("inf")
+            total = stats.get("total_trades", 0) or 0
+            wins = stats.get("wins", 0) or 0
+            stats["win_rate"] = (wins / total * 100) if total > 0 else 0.0
+            # Coerce all numeric fields to JSON-safe Python floats. DuckDB's
+            # Decimal type and float("inf") both break strict JSON parsers,
+            # which in turn crashes the Dashboard client code.
+            for k, v in list(stats.items()):
+                if v is None:
+                    stats[k] = 0
+                    continue
+                try:
+                    f = float(v)
+                    if f != f or f in (float("inf"), float("-inf")):
+                        stats[k] = None
+                    else:
+                        stats[k] = f
+                except (TypeError, ValueError):
+                    pass
+            gp = stats.get("gross_profit") or 0.0
+            gl = stats.get("gross_loss") or 0.0
+            stats["profit_factor"] = abs(gp / gl) if gl else None
         return stats
     except Exception as e:
         logger.error(f"Trade stats query failed: {e}")

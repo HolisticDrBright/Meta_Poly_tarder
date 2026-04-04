@@ -226,8 +226,18 @@ class OrderExecutor:
         self.paper_trading = False
         return {"ok": True, "mode": "live"}
 
-    async def execute(self, scored: ScoredIntent) -> ExecutionResult:
-        """Execute a single scored intent."""
+    async def execute(
+        self,
+        scored: ScoredIntent,
+        market_price: Optional[float] = None,
+    ) -> ExecutionResult:
+        """Execute a single scored intent.
+
+        market_price: the real, current price of the token being traded
+        (YES price for Side.YES, NO price for Side.NO). Passed in by the
+        scheduler from the MarketState so paper fills reflect the actual
+        book instead of the strategy's intended limit price.
+        """
         intent = scored.intent
 
         if not scored.approved:
@@ -236,23 +246,39 @@ class OrderExecutor:
             )
 
         if self.paper_trading:
-            return self._paper_fill(intent)
+            return self._paper_fill(intent, market_price)
         else:
             return await self._live_fill(intent)
 
-    def _paper_fill(self, intent: OrderIntent) -> ExecutionResult:
-        """Simulate a fill for paper trading."""
+    def _paper_fill(
+        self,
+        intent: OrderIntent,
+        market_price: Optional[float] = None,
+    ) -> ExecutionResult:
+        """Simulate a fill for paper trading.
+
+        The fill price is the REAL current market price of the token, not
+        the strategy's intent price. This matches how a live CLOB order
+        would behave — a limit that crosses the spread fills at the book
+        price, not the limit price. Using intent.price lets A-S fabricate
+        wins by quoting off-book and pretending those fills happened.
+        """
+        if market_price is not None and market_price > 0:
+            fill_price = max(0.001, min(0.999, float(market_price)))
+        else:
+            fill_price = intent.price
+
         result = ExecutionResult(
             success=True,
             order_id=f"PAPER-{intent.market_id[:8]}-{datetime.now(timezone.utc).timestamp():.0f}",
-            fill_price=intent.price,
+            fill_price=fill_price,
             fill_size=intent.size_usdc,
             paper=True,
         )
         self._paper_fills.append(result)
         logger.info(
             f"PAPER FILL: {intent.strategy.value} {intent.side.value} "
-            f"${intent.size_usdc:.2f} @ {intent.price:.4f} — {intent.question[:50]}"
+            f"${intent.size_usdc:.2f} @ {fill_price:.4f} — {intent.question[:50]}"
         )
         return result
 
@@ -290,11 +316,21 @@ class OrderExecutor:
             return ExecutionResult(success=False, error=str(e), paper=False)
 
     async def execute_batch(
-        self, scored_intents: list[ScoredIntent]
+        self,
+        scored_intents: list[ScoredIntent],
+        market_prices: Optional[dict[str, float]] = None,
     ) -> list[ExecutionResult]:
+        """Execute a batch of scored intents.
+
+        market_prices: optional {market_id: price_of_side_being_bought}
+        lookup so paper fills get realistic prices from the live book.
+        """
         results = []
         for si in scored_intents:
-            result = await self.execute(si)
+            mp = None
+            if market_prices is not None:
+                mp = market_prices.get(si.intent.market_id)
+            result = await self.execute(si, market_price=mp)
             results.append(result)
         return results
 

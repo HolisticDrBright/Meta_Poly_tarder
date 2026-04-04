@@ -121,8 +121,14 @@ class AvellanedaStoikovMM(Strategy):
         vol = self._estimate_volatility(market_state)
         t_remaining = min(market_state.hours_to_close * 3600, self.session_seconds)
 
+        # The real "mid" for a prediction market is the current YES token
+        # probability — NOT (yes+no)/2, which is always ~0.5 because YES +
+        # NO ≈ 1. Using the synthetic mid caused A-S to quote around 0.5 on
+        # markets trading at 0.18/0.82, producing delusional fills.
+        real_mid = market_state.yes_price
+
         quotes = compute_quotes(
-            mid=market_state.mid_price,
+            mid=real_mid,
             inventory=state.inventory,
             gamma=self.gamma,
             volatility=vol,
@@ -130,16 +136,19 @@ class AvellanedaStoikovMM(Strategy):
             kappa=self.kappa,
         )
 
-        # Emit bid-side intent (we'd emit ask-side too in production)
-        # For simplicity, emit the side that reduces inventory
+        # Emit the side that reduces inventory. On Polymarket both YES and
+        # NO are buy-only; "selling YES" really means buying NO. We quote
+        # tight around the actual market price, not a synthetic mid.
         if state.inventory >= 0:
-            # Long or neutral → prefer to sell (ask)
+            # Long or neutral → lean toward buying NO (which is equivalent
+            # to selling YES exposure). Price NO near its real market
+            # price, not off-book.
             side = Side.NO
-            price = max(0.01, min(0.99, quotes.ask))
+            price = max(0.02, min(0.98, market_state.no_price))
         else:
-            # Short → prefer to buy (bid)
+            # Short → lean toward buying YES near its real market price.
             side = Side.YES
-            price = max(0.01, min(0.99, quotes.bid))
+            price = max(0.02, min(0.98, market_state.yes_price))
 
         return OrderIntent(
             strategy=self.name,

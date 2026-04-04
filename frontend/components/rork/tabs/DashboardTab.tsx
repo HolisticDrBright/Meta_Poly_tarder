@@ -40,16 +40,33 @@ export default function DashboardTab() {
 
   // Pull the same authoritative stats the History tab uses, so Dashboard
   // and History always agree. Refresh every 30s.
+  // The backend can sometimes return non-strict JSON (e.g. profit_factor =
+  // Infinity) which breaks JSON.parse in some browsers. We fetch as text
+  // and sanitise before parsing so the dashboard never crashes on that.
   useEffect(() => {
     let cancelled = false;
     async function load() {
       try {
         const r = await fetch("/api/portfolio/trade-stats");
         if (!r.ok) return;
-        const d = await r.json();
-        if (!cancelled && d && typeof d.total_trades === "number") {
-          setTradeStats(d);
-        }
+        const raw = await r.text();
+        const cleaned = raw
+          .replace(/:\s*Infinity/g, ": null")
+          .replace(/:\s*-Infinity/g, ": null")
+          .replace(/:\s*NaN/g, ": null");
+        let d: any = null;
+        try { d = JSON.parse(cleaned); } catch { return; }
+        if (cancelled || !d || typeof d.total_trades !== "number") return;
+        // Coerce all numeric fields we might touch so nothing is undefined
+        // when we reach the render.
+        const safe: TradeStats = {
+          total_trades: Number(d.total_trades) || 0,
+          wins: Number(d.wins) || 0,
+          losses: Number(d.losses) || 0,
+          total_pnl: Number(d.total_pnl) || 0,
+          win_rate: Number(d.win_rate) || 0,
+        };
+        setTradeStats(safe);
       } catch {}
     }
     load();
@@ -221,7 +238,7 @@ export default function DashboardTab() {
           <div className="w-px h-6" style={{ backgroundColor: Colors.surfaceBorder }} />
           <div className="text-center"><span className="text-base font-bold font-mono" style={{ color: Colors.textPrimary }}>{stats.sharpe_ratio?.toFixed(3) || "—"}</span><div className="text-[10px] font-medium uppercase tracking-wider" style={{ color: Colors.textTertiary }}>Sharpe</div></div>
           <div className="w-px h-6" style={{ backgroundColor: Colors.surfaceBorder }} />
-          <div className="text-center"><span className="text-base font-bold font-mono" style={{ color: Colors.cyan }}>{tradeStats ? `${tradeStats.win_rate.toFixed(0)}%` : "—"}</span><div className="text-[10px] font-medium uppercase tracking-wider" style={{ color: Colors.textTertiary }}>Accuracy</div></div>
+          <div className="text-center"><span className="text-base font-bold font-mono" style={{ color: Colors.cyan }}>{tradeStats && typeof tradeStats.win_rate === "number" ? `${tradeStats.win_rate.toFixed(0)}%` : "—"}</span><div className="text-[10px] font-medium uppercase tracking-wider" style={{ color: Colors.textTertiary }}>Accuracy</div></div>
         </div>
       </div>
 

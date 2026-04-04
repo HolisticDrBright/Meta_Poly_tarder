@@ -798,7 +798,26 @@ class TradingScheduler:
 
             if approved:
                 logger.info(f"Executing {len(approved)} approved trades")
-                results = await self.executor.execute_batch(approved)
+                # Build a lookup of REAL current token prices so paper
+                # fills reflect the actual book instead of the strategy's
+                # intended limit price. For YES side we pass yes_price,
+                # for NO side we pass no_price — the price of the token
+                # actually being bought.
+                from backend.strategies.base import Side
+                price_lookup: dict[str, float] = {}
+                for m in self.state.markets:
+                    price_lookup[m.market_id] = m.yes_price  # default
+                # Overwrite per-intent with the side-specific price
+                per_intent_prices: dict[str, float] = {}
+                market_by_id = {m.market_id: m for m in self.state.markets}
+                for si in approved:
+                    m = market_by_id.get(si.intent.market_id)
+                    if m is None:
+                        continue
+                    per_intent_prices[si.intent.market_id] = (
+                        m.yes_price if si.intent.side == Side.YES else m.no_price
+                    )
+                results = await self.executor.execute_batch(approved, market_prices=per_intent_prices)
 
                 for si, result in zip(approved, results):
                     if result.success:
