@@ -44,7 +44,6 @@ class TradingConfig:
 class AIConfig:
     anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
-    mirofish_agents: int = _int(os.getenv("MIROFISH_AGENTS"), 20)
     ensemble_timeout: int = _int(os.getenv("AI_ENSEMBLE_TIMEOUT"), 30)
 
 

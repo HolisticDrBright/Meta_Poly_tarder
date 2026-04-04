@@ -85,44 +85,44 @@ export default function DashboardTab() {
   }, [markets]);
 
   const growthData: PortfolioGrowthPoint[] = useMemo(() => {
-    if (equityCurve.length > 2) {
+    // Real equity curve points only. No synthetic fill-in.
+    if (equityCurve.length >= 2) {
       return equityCurve.slice(-16).map((p: any) => ({
         day: new Date(p.timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
-        value: p.balance || 10000,
+        value: p.balance,
       }));
     }
-    // Generate growth curve from realized PnL when no equity history
-    if (totalPnL > 0) {
-      const steps = 10;
-      return Array.from({ length: steps + 1 }, (_, i) => ({
-        day: i === 0 ? "Start" : i === steps ? "Now" : `D${i}`,
-        value: 10000 + (totalPnL * (i / steps)) + (Math.random() - 0.3) * (totalPnL * 0.02),
-      }));
-    }
-    return [{ day: "Start", value: 10000 }, { day: "Now", value: totalBalance }];
-  }, [equityCurve, totalPnL, totalBalance]);
+    return [];
+  }, [equityCurve]);
 
   const marketOpps = useMemo(() => {
+    // Only surface markets where the backend has actually computed a model
+    // probability (from the AI ensemble / entropy screener). No heuristic
+    // invention of edges on the client.
     return markets
-      .filter((m: any) => m.yes_price > 0.02 && m.yes_price < 0.98) // Skip resolved markets
+      .filter((m: any) =>
+        m.yes_price > 0.02 &&
+        m.yes_price < 0.98 &&
+        typeof m.model_probability === "number" &&
+        m.model_probability > 0 &&
+        m.model_probability !== m.yes_price
+      )
       .slice(0, 12)
       .map((m: any) => {
-        // Use model_probability from AI ensemble, or contrarian heuristic as fallback
-        const mp = m.yes_price || 0.5;
-        const modelP = (m.model_probability && m.model_probability > 0 && m.model_probability !== mp)
-          ? m.model_probability
-          : mp + (0.5 - mp) * 0.10; // contrarian nudge toward 0.5 by 10%
-        const edge = ((modelP - mp) * 100);
-        const klDiv = m.kl_divergence || (m.entropy_bits ? m.entropy_bits * Math.abs(edge) / 100 : 0);
+        const mp = m.yes_price;
+        const modelP = m.model_probability;
+        const edge = (modelP - mp) * 100;
+        const klDiv = m.kl_divergence || 0;
         const score = Math.min(100, Math.max(0, Math.round(
           Math.abs(edge) * 8 + klDiv * 50 + Math.min((m.liquidity || 0) / 50000, 30)
         )));
         let classification: "PAPER TRADE" | "WATCHLIST" | "NO-TRADE" = "NO-TRADE";
         if (score >= 60) classification = "PAPER TRADE";
         else if (score >= 40) classification = "WATCHLIST";
-        const sparkline = Array.from({ length: 20 }, (_, i) => ({
-          value: mp * 100 + (Math.sin(i * 0.8) + Math.random() - 0.5) * Math.max(3, Math.abs(edge)),
-        }));
+        // Real price history from the backend if available; otherwise empty
+        // array (OpportunityCard renders no sparkline rather than synthetic).
+        const history = Array.isArray(m.price_history) ? m.price_history : [];
+        const sparkline = history.slice(-20).map((v: number) => ({ value: v * 100 }));
         return {
           id: m.id, title: m.question || m.title || "Market", category: (m.category || "economics") as any,
           opportunityScore: score, edgeEstimate: +edge.toFixed(1), classification,

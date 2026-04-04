@@ -104,11 +104,11 @@ class EnsembleAI(Strategy):
 
     name = StrategyName.ENSEMBLE_AI
 
-    # Weights for the 3-model ensemble
+    # Weights for the AI ensemble. Only real model calls contribute —
+    # the old "mirofish" synthetic-swarm fallback has been removed.
     WEIGHTS = {
-        "claude": 0.40,
-        "gpt4": 0.35,
-        "mirofish": 0.25,
+        "claude": 0.55,
+        "gpt4": 0.45,
     }
 
     def __init__(
@@ -207,28 +207,6 @@ class EnsembleAI(Strategy):
             logger.error(f"GPT-4o debate failed: {e}")
             return None
 
-    def _mirofish_lite(self, market: MarketState) -> DebateResult:
-        """Lightweight local swarm simulation (no API needed)."""
-        # Simple heuristic ensemble: vary the price by noise to simulate
-        # 20 agents with slightly different priors
-        import random
-
-        probs = []
-        rng = random.Random(hash(market.market_id))
-        for _ in range(20):
-            noise = rng.gauss(0, 0.05)
-            p = max(0.01, min(0.99, market.yes_price + noise))
-            probs.append(p)
-        avg = statistics.mean(probs)
-        return DebateResult(
-            agents=[],
-            final_probability=avg,
-            confidence="low",
-            recommended_action="HOLD",
-            time_sensitivity="normal",
-            model_source="mirofish",
-        )
-
     async def run_ensemble(
         self,
         market: MarketState,
@@ -241,9 +219,12 @@ class EnsembleAI(Strategy):
 
         claude_result = await self._call_claude(prompt)
         gpt4_result = await self._call_gpt4(prompt)
-        mirofish_result = self._mirofish_lite(market)
 
-        debates = [r for r in [claude_result, gpt4_result, mirofish_result] if r]
+        # Only real model responses contribute. If both fail (no keys /
+        # API down), debates is empty and run_ensemble returns a HOLD
+        # action with zero confidence — the strategy will skip this
+        # market rather than fabricating a signal.
+        debates = [r for r in [claude_result, gpt4_result] if r]
 
         # Weighted average
         total_weight = 0.0
@@ -255,8 +236,18 @@ class EnsembleAI(Strategy):
             total_weight += w
             probs.append(d.final_probability)
 
-        ensemble_p = weighted_sum / total_weight if total_weight > 0 else 0.5
-        spread = statistics.stdev(probs) if len(probs) > 1 else 0.5
+        # With no real model responses, hold — never synthesize a probability.
+        if total_weight == 0:
+            return EnsembleResult(
+                debates=[],
+                ensemble_probability=market.yes_price,
+                ensemble_confidence=0.0,
+                recommended_action="HOLD",
+                spread=0.0,
+            )
+
+        ensemble_p = weighted_sum / total_weight
+        spread = statistics.stdev(probs) if len(probs) > 1 else 0.0
         confidence = max(0, 1 - spread / 0.5)
 
         if ensemble_p > market.yes_price + self.min_edge:

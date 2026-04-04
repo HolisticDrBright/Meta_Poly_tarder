@@ -31,21 +31,32 @@ export default function MarketsTab() {
 
   const opps = useMemo(() => {
     return markets.map((m: any) => {
-      const modelP = m.model_probability || m.yes_price;
-      const edge = (modelP - m.yes_price) * 100;
-      const score = Math.min(100, Math.max(0, Math.round(Math.abs(edge) * 10 + (m.liquidity || 0) / 10000)));
+      // Only compute an edge when the backend has produced a real model
+      // probability. Otherwise leave edge/score at zero so nothing is
+      // fabricated on the client.
+      const hasModel =
+        typeof m.model_probability === "number" &&
+        m.model_probability > 0 &&
+        m.model_probability !== m.yes_price;
+      const modelP = hasModel ? m.model_probability : m.yes_price;
+      const edge = hasModel ? (modelP - m.yes_price) * 100 : 0;
+      const score = hasModel
+        ? Math.min(100, Math.max(0, Math.round(Math.abs(edge) * 10 + (m.liquidity || 0) / 10000)))
+        : 0;
       let classification: Classification = "NO-TRADE";
       if (score >= 60) classification = "PAPER TRADE";
       else if (score >= 40) classification = "WATCHLIST";
       const cat = (m.category || "economics").toLowerCase();
-      const sparkline = Array.from({ length: 20 }, () => ({ value: (m.yes_price || 0.5) * 100 + (Math.random() - 0.5) * 10 }));
+      // Real price history only. Empty when backend hasn't provided it.
+      const history = Array.isArray(m.price_history) ? m.price_history : [];
+      const sparkline = history.slice(-20).map((v: number) => ({ value: v * 100 }));
       return {
         id: m.id, title: m.question || m.title || "Market",
         category: cat as MarketCategory,
         opportunityScore: score, edgeEstimate: +edge.toFixed(1), classification,
-        sparkline, currentPrice: m.yes_price || 0.5,
+        sparkline, currentPrice: m.yes_price || 0,
         volume24h: m.volume_24h ? `$${(m.volume_24h / 1000).toFixed(0)}K` : "$0",
-        lastUpdated: "now", aiSummary: "", fairProbability: modelP, marketProbability: m.yes_price || 0.5,
+        lastUpdated: "now", aiSummary: "", fairProbability: modelP, marketProbability: m.yes_price || 0,
       };
     });
   }, [markets]);
