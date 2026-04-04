@@ -215,7 +215,32 @@ class EnsembleAI(Strategy):
         whale_positions: str = "",
     ) -> EnsembleResult:
         """Run all models and fuse results."""
-        prompt = self._build_user_prompt(market, context, jet_signals, whale_positions)
+        # Specialist layer runs FIRST on gated markets. Its findings are
+        # injected into the outer debate context so Claude + GPT-4o can
+        # read real news/on-chain/history/swarm findings before forming
+        # their own 7-role views. The specialists' fused probability is
+        # also folded into the final ensemble weighting.
+        specialist_bundle = None
+        specialist_context = ""
+        try:
+            from backend.strategies.specialists.orchestrator import (
+                get_specialist_orchestrator,
+            )
+            orch = get_specialist_orchestrator()
+            specialist_bundle = await orch.analyze(market)
+            if specialist_bundle is not None:
+                specialist_context = specialist_bundle.context_for_outer_debate
+        except Exception as e:
+            logger.warning(f"Specialist layer failed (continuing without): {e}")
+
+        merged_context = context
+        if specialist_context:
+            merged_context = (
+                f"{context}\n\n=== SPECIALIST LAYER ===\n{specialist_context}"
+                if context else f"=== SPECIALIST LAYER ===\n{specialist_context}"
+            )
+
+        prompt = self._build_user_prompt(market, merged_context, jet_signals, whale_positions)
 
         claude_result = await self._call_claude(prompt)
         gpt4_result = await self._call_gpt4(prompt)
@@ -226,7 +251,7 @@ class EnsembleAI(Strategy):
         # market rather than fabricating a signal.
         debates = [r for r in [claude_result, gpt4_result] if r]
 
-        # Weighted average
+        # Weighted average across outer models
         total_weight = 0.0
         weighted_sum = 0.0
         probs = []
@@ -235,6 +260,17 @@ class EnsembleAI(Strategy):
             weighted_sum += d.final_probability * w
             total_weight += w
             probs.append(d.final_probability)
+
+        # Fold specialist opinions into the fusion with their assigned
+        # weights. Shadow-mode opinions already have weight=0 and do not
+        # influence the outcome (they still get logged for learning).
+        if specialist_bundle is not None:
+            for op in specialist_bundle.opinions:
+                if op.weight <= 0:
+                    continue
+                weighted_sum += op.probability * op.weight
+                total_weight += op.weight
+                probs.append(op.probability)
 
         # With no real model responses, hold — never synthesize a probability.
         if total_weight == 0:

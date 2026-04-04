@@ -129,6 +129,22 @@ class TradingScheduler:
         except Exception as e:
             logger.warning(f"Decision logger unavailable — learning loop off: {e}")
 
+        # Specialist layer — attach decision logger so specialist opinions
+        # also feed the learning loop for Brier scoring + weight tuning.
+        try:
+            from backend.strategies.specialists.orchestrator import (
+                get_specialist_orchestrator,
+            )
+            specialist_orch = get_specialist_orchestrator()
+            specialist_orch.attach_decision_logger(self._decision_logger)
+            logger.info(
+                f"Specialist layer ready: news + onchain + history + mirofish "
+                f"(gate {settings.specialists.min_edge*100:.1f}% edge, "
+                f"mirofish {'shadow' if settings.trading.paper_trading else 'active'} mode)"
+            )
+        except Exception as e:
+            logger.warning(f"Specialist orchestrator not loaded: {e}")
+
         # Shared state (accessible by API routes)
         from backend.state import system_state
         self.state = system_state

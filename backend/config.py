@@ -48,6 +48,20 @@ class AIConfig:
 
 
 @dataclass(frozen=True)
+class SpecialistConfig:
+    """Specialist layer (news, on-chain, history, swarm)."""
+    min_edge: float = _float(os.getenv("SPECIALIST_MIN_EDGE"), 0.05)
+    dedupe_minutes: int = _int(os.getenv("SPECIALIST_DEDUPE_MINUTES"), 120)
+    alchemy_polygon_url: str = os.getenv("ALCHEMY_POLYGON_URL", "")
+    # MiroFish swarm
+    mirofish_enabled: bool = _bool(os.getenv("MIROFISH_ENABLED"), True)
+    mirofish_agents: int = _int(os.getenv("MIROFISH_AGENTS"), 500)
+    mirofish_model: str = os.getenv("MIROFISH_MODEL", "gpt-4o-mini")
+    mirofish_weight: float = _float(os.getenv("MIROFISH_WEIGHT"), 0.05)
+    mirofish_max_concurrency: int = _int(os.getenv("MIROFISH_MAX_CONCURRENCY"), 25)
+
+
+@dataclass(frozen=True)
 class StrategyFlags:
     entropy: bool = _bool(os.getenv("STRATEGY_ENTROPY"), True)
     avellaneda: bool = _bool(os.getenv("STRATEGY_AVELLANEDA"), True)
@@ -122,6 +136,7 @@ class Settings:
     risk: RiskConfig = field(default_factory=RiskConfig)
     alerts: AlertConfig = field(default_factory=AlertConfig)
     vpn: VPNConfig = field(default_factory=VPNConfig)
+    specialists: SpecialistConfig = field(default_factory=SpecialistConfig)
 
 
 settings = Settings()
