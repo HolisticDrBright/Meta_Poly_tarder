@@ -71,8 +71,13 @@ class ExitManager:
         """Check a single position against all exit rules."""
 
         # 1. Take-profit
-        if pos.entry_price > 0:
-            pnl_pct = pos.pnl / (pos.entry_price * pos.size_usdc)
+        # pnl_pct is return on capital invested: pnl / size_usdc.
+        # (The old formula divided by entry_price*size_usdc, which has
+        # wrong units and made exits fire at ~1/entry_price times the
+        # intended threshold — e.g. a 30% take-profit was firing at 15%
+        # real return at entry=0.5, 6% real return at entry=0.2.)
+        if pos.size_usdc > 0:
+            pnl_pct = pos.pnl / pos.size_usdc
             if pnl_pct >= self.rules.take_profit_pct:
                 return ExitSignal(
                     position=pos,
@@ -120,18 +125,22 @@ class ExitManager:
                 )
 
         # 5. Near-certain resolution (price >0.95 or <0.05)
-        if market:
+        # Only exit if the position is profitable — a position that's
+        # losing at the near-certain boundary is about to resolve
+        # against us, and crystallizing the loss by closing at 0.95
+        # gives up any remaining option value. Let it resolve instead.
+        if market and pos.pnl > 0:
             if pos.side == Side.YES and market.yes_price >= 0.95:
                 return ExitSignal(
                     position=pos,
-                    reason=f"NEAR CERTAIN YES: price={market.yes_price:.3f}",
+                    reason=f"NEAR CERTAIN YES: price={market.yes_price:.3f} pnl=${pos.pnl:.2f}",
                     pnl=pos.pnl,
                     urgency="normal",
                 )
             if pos.side == Side.NO and market.no_price >= 0.95:
                 return ExitSignal(
                     position=pos,
-                    reason=f"NEAR CERTAIN NO: price={market.no_price:.3f}",
+                    reason=f"NEAR CERTAIN NO: price={market.no_price:.3f} pnl=${pos.pnl:.2f}",
                     pnl=pos.pnl,
                     urgency="normal",
                 )

@@ -103,23 +103,29 @@ class ThetaHarvester(Strategy):
 
         mp = market_state.yes_price
 
-        # Determine expected resolution direction
-        # Markets near 0 or 1 are candidates for theta harvesting
+        # Determine expected resolution direction. Theta harvesting
+        # doesn't claim to know the outcome with 100% confidence — it
+        # exploits the time-decay drift of already-near-certain markets
+        # toward the resolution boundary. The "fair" probability for
+        # sizing is NOT 1.0 (which would produce a degenerate full-Kelly
+        # bet); it's a conservative estimate based on how close the
+        # market is to the boundary scaled by how much time is left for
+        # the decay to play out.
         if mp < 0.20:
-            # Likely resolves NO → already priced near 0
-            fair_price = 0.0
             side = Side.NO
             price = market_state.no_price
-            edge = mp  # distance from 0
-            # Our fair value for the NO token itself
-            fair_for_side = 1.0 - fair_price  # = 1.0
+            edge = mp  # distance from 0 — how much more can it drift
+            # Theta confidence: closer to boundary + less time left = more confident.
+            # Start from market-implied probability (1 - mp for NO) and add a small
+            # theta bonus capped at +15%.
+            theta_bonus = min(0.15, edge * (1 - hours / self.max_resolution_hours))
+            fair_for_side = min(0.99, (1.0 - mp) + theta_bonus)
         elif mp > 0.80:
-            # Likely resolves YES → already priced near 1
-            fair_price = 1.0
             side = Side.YES
             price = mp
             edge = 1.0 - mp  # distance from 1
-            fair_for_side = fair_price  # = 1.0
+            theta_bonus = min(0.15, edge * (1 - hours / self.max_resolution_hours))
+            fair_for_side = min(0.99, mp + theta_bonus)
         else:
             # Mid-range: no clear theta edge
             return None
@@ -135,11 +141,15 @@ class ThetaHarvester(Strategy):
         ):
             return None
 
-        theta = compute_theta(fair_price, mp, hours)
+        fair_price_for_theta = 0.0 if mp < 0.20 else 1.0
+        theta = compute_theta(fair_price_for_theta, mp, hours)
         urgency = classify_urgency(hours)
         multiplier = URGENCY_SIZE_MULTIPLIER[urgency]
 
-        # Kelly size scaled by urgency multiplier
+        # Kelly with the honest fair_for_side (not 1.0). For a typical
+        # mp=0.15 NO-lean market with 12h left, fair_for_side ≈ 0.88-0.90
+        # vs price 0.85 = small-but-real edge, and Kelly produces a
+        # sensible fraction instead of degenerate max.
         kelly_size = kelly_size_usdc(
             fair_probability=fair_for_side,
             market_price=price,

@@ -62,7 +62,7 @@ class RiskEngine:
         max_portfolio_exposure: float = 0.80,
         max_single_market_pct: float = 0.15,
         max_daily_loss_pct: float = 0.10,
-        max_trade_size_usdc: float = 150,
+        max_trade_size_usdc: float = 30,
         min_balance_usdc: float = 10,
         paper_trading: bool = True,
     ) -> None:
@@ -72,8 +72,26 @@ class RiskEngine:
         self.max_trade_size_usdc = max_trade_size_usdc
         self.min_balance_usdc = min_balance_usdc
         self.paper_trading = paper_trading
+        # Internal state used only for daily-loss counters. Concentration
+        # and exposure checks read from system_state directly so they
+        # always see the real open positions (see _sync_from_system_state).
         self.state = RiskState()
         self._kill_switch = False
+
+    def _sync_from_system_state(self) -> None:
+        """Pull fresh balance + positions from the shared system_state
+        so concentration and exposure checks are computed against the
+        real open book, not a stale in-engine snapshot."""
+        try:
+            from backend.state import system_state
+            sc = getattr(system_state, "starting_capital", None)
+            if sc and sc > 0:
+                self.state.balance = float(sc)
+            self.state.positions = list(system_state.positions)
+            self.state.total_exposure = sum(p.size_usdc for p in self.state.positions)
+            self.state.daily_pnl = float(getattr(system_state, "realized_pnl", 0) or 0)
+        except Exception:
+            pass
 
     def kill(self) -> None:
         """Emergency kill switch — block all trading."""
@@ -85,42 +103,52 @@ class RiskEngine:
         logger.warning("Kill switch deactivated")
 
     def check(self, scored: ScoredIntent) -> RiskCheckResult:
-        """Run all risk checks on a scored intent."""
+        """Run all risk checks on a scored intent.
+
+        Runs in BOTH paper and live mode — the previous version
+        bypassed concentration, daily-loss, and exposure checks in paper
+        mode, which meant paper trading couldn't validate the risk
+        engine and you'd only find bugs after going live. Paper must
+        mirror live behavior except where genuinely impossible (e.g.
+        checking a real wallet balance that doesn't exist).
+        """
         intent = scored.intent
 
         # Kill switch
         if self._kill_switch:
             return RiskCheckResult(False, "Kill switch active")
 
-        # Paper trading passthrough (still check sizing)
-        if not self.paper_trading:
-            # Balance check
-            if self.state.balance < self.min_balance_usdc:
-                return RiskCheckResult(False, f"Balance too low: ${self.state.balance:.2f}")
+        # Pull the latest balance + positions from system_state so
+        # concentration checks see reality, not stale engine state.
+        self._sync_from_system_state()
 
-            # Daily loss check
-            if self.state.daily_pnl < 0:
-                loss_pct = abs(self.state.daily_pnl) / self.state.balance
-                if loss_pct >= self.max_daily_loss_pct:
-                    return RiskCheckResult(
-                        False,
-                        f"Daily loss limit hit: {loss_pct:.1%} >= {self.max_daily_loss_pct:.1%}",
-                    )
+        # Balance check (paper uses starting_capital as the reference)
+        if self.state.balance < self.min_balance_usdc:
+            return RiskCheckResult(False, f"Balance too low: ${self.state.balance:.2f}")
 
-            # Portfolio exposure check
-            if self.state.exposure_pct >= self.max_portfolio_exposure:
+        # Daily loss check
+        if self.state.daily_pnl < 0 and self.state.balance > 0:
+            loss_pct = abs(self.state.daily_pnl) / self.state.balance
+            if loss_pct >= self.max_daily_loss_pct:
                 return RiskCheckResult(
                     False,
-                    f"Portfolio exposure limit: {self.state.exposure_pct:.1%}",
+                    f"Daily loss limit hit: {loss_pct:.1%} >= {self.max_daily_loss_pct:.1%}",
                 )
 
-            # Single market concentration check
-            market_exp = self.state.market_exposure_pct(intent.market_id)
-            if market_exp >= self.max_single_market_pct:
-                return RiskCheckResult(
-                    False,
-                    f"Market concentration limit: {market_exp:.1%}",
-                )
+        # Portfolio exposure check
+        if self.state.exposure_pct >= self.max_portfolio_exposure:
+            return RiskCheckResult(
+                False,
+                f"Portfolio exposure limit: {self.state.exposure_pct:.1%}",
+            )
+
+        # Single market concentration check
+        market_exp = self.state.market_exposure_pct(intent.market_id)
+        if market_exp >= self.max_single_market_pct:
+            return RiskCheckResult(
+                False,
+                f"Market concentration limit: {market_exp:.1%}",
+            )
 
         # Size adjustment (always enforced)
         adjusted_size = min(intent.size_usdc, self.max_trade_size_usdc)

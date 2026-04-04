@@ -113,102 +113,83 @@ class AvellanedaStoikovMM(Strategy):
         return True
 
     def _estimate_volatility(self, m: MarketState) -> float:
-        """Rough volatility estimate from spread and price level."""
-        # In a real system, compute rolling std from price history.
-        # Fallback: use spread as a proxy scaled by price uncertainty.
+        """Rough volatility estimate from spread and price level.
+
+        Uses yes_price directly rather than mid_price, because mid_price
+        on Polymarket is (yes + no) / 2 which is always ~0.5 — so the
+        old `4 * mid * (1 - mid)` factor was always ~1.0, making the
+        whole scaling term dead code. yes_price is the real current
+        probability, and binary entropy `p * (1 - p)` peaks at 0.5 as
+        intended.
+        """
         base_vol = m.spread * 2
-        price_uncertainty = 4 * m.mid_price * (1 - m.mid_price)  # max at 0.5
+        p = max(0.01, min(0.99, m.yes_price))
+        price_uncertainty = 4 * p * (1 - p)
         return max(base_vol * price_uncertainty, 0.001)
 
     async def evaluate(self, market_state: MarketState) -> Optional[OrderIntent]:
+        """Single-market evaluate path. Kept for external callers; the
+        scheduler uses evaluate_batch() which shares the same gates +
+        _build_intent helper without double-filtering."""
         if not self._passes_filters(market_state):
             return None
-
-        # Regime gate: only run A-S in regimes where spread capture has edge.
-        # Consensus-grind = A-S's natural habitat (range-bound, tight books).
-        # Information-driven = skip (direction matters, not spread).
-        # Resolution-cliff / illiquid-noise = skip.
         regime_call = classify_regime(market_state)
         if not regime_allows_strategy(regime_call.regime, self.name):
             return None
-
         state = self._get_state(market_state.market_id)
-
-        # VPIN check
-        if state.trade_buckets:
-            current_vpin = vpin(state.trade_buckets, n_buckets=20)
-            if current_vpin > self.vpin_threshold:
-                state.paused = True
-                return None
+        if state.trade_buckets and vpin(state.trade_buckets, n_buckets=20) > self.vpin_threshold:
+            state.paused = True
+            return None
         state.paused = False
-
-        # Check inventory limits
         if abs(state.inventory) >= self.max_inventory:
             return None
-
-        vol = self._estimate_volatility(market_state)
-        t_remaining = min(market_state.hours_to_close * 3600, self.session_seconds)
-
-        # The real "mid" for a prediction market is the current YES token
-        # probability — NOT (yes+no)/2, which is always ~0.5 because YES +
-        # NO ≈ 1. Using the synthetic mid caused A-S to quote around 0.5 on
-        # markets trading at 0.18/0.82, producing delusional fills.
-        real_mid = market_state.yes_price
-
-        quotes = compute_quotes(
-            mid=real_mid,
-            inventory=state.inventory,
-            gamma=self.gamma,
-            volatility=vol,
-            t_remaining=t_remaining,
-            kappa=self.kappa,
-        )
-
-        # Side selection. On Polymarket YES and NO are separate tokens;
-        # "selling YES" isn't possible, so we flip the inventory-skewed
-        # quoting into "buy NO" when we want to reduce long exposure.
         if state.inventory >= 0:
             side = Side.NO
             market_price = max(0.02, min(0.98, market_state.no_price))
         else:
             side = Side.YES
             market_price = max(0.02, min(0.98, market_state.yes_price))
-
-        # Market-maker EV gate: a MM's edge isn't fair-vs-market; it's
-        # the spread it captures. The gate refuses trades only when the
-        # captured spread can't cover fees + slippage + adverse selection.
-        if not mm_ev_gate_passes(
-            quoted_spread=market_state.spread,
-            market_price=market_price,
-        ):
-            logger.debug(
-                f"A-S EV gate rejected {market_state.market_id[:10]}: "
-                f"spread={market_state.spread:.4f} too thin to profit after fees"
-            )
+        if not mm_ev_gate_passes(quoted_spread=market_state.spread, market_price=market_price):
             return None
+        return self._build_intent(market_state, state, regime_call, side, market_price)
 
-        # Market making doesn't scale size with edge the way directional
-        # strategies do — you quote a fixed clip per tick and let volume
-        # fill you. We use a fraction of the per-trade cap, scaled down
-        # by how much of your bankroll would be exposed if this market
-        # filled all the way up to max_inventory.
-        size_usdc = min(self.max_trade_usdc * 0.5, self.bankroll * 0.05)
-        size_usdc = round(max(1.0, size_usdc), 2)
-
-        captured_bps = (market_state.spread / 2.0) * 10000
+    def _build_intent(
+        self,
+        m: MarketState,
+        state: MMState,
+        regime_call,
+        side: Side,
+        market_price: float,
+    ) -> OrderIntent:
+        """Construct the OrderIntent after all gates have already passed.
+        Split out of evaluate() so evaluate_batch() can share it without
+        redundantly re-running the filter + regime + VPIN + EV checks.
+        """
+        vol = self._estimate_volatility(m)
+        t_remaining = min(m.hours_to_close * 3600, self.session_seconds)
+        quotes = compute_quotes(
+            mid=m.yes_price,
+            inventory=state.inventory,
+            gamma=self.gamma,
+            volatility=vol,
+            t_remaining=t_remaining,
+            kappa=self.kappa,
+        )
+        size_usdc = round(max(1.0, min(self.max_trade_usdc * 0.5, self.bankroll * 0.05)), 2)
+        captured_bps = (m.spread / 2.0) * 10000
         return OrderIntent(
             strategy=self.name,
-            market_id=market_state.market_id,
-            condition_id=market_state.condition_id,
-            question=market_state.question,
+            market_id=m.market_id,
+            condition_id=m.condition_id,
+            question=m.question,
             side=side,
             order_type=OrderType.LIMIT,
             price=market_price,
             size_usdc=size_usdc,
-            confidence=min(0.95, market_state.spread / 0.05),
+            confidence=min(0.95, m.spread / 0.05),
             reason=(
                 f"A-S MM [{regime_call.regime.value}]: "
-                f"mkt={market_price:.4f} spread={market_state.spread:.4f} "
+                f"mkt={market_price:.4f} spread={m.spread:.4f} "
                 f"capture={captured_bps:.0f}bps size=${size_usdc:.2f} "
                 f"r={quotes.reservation_price:.4f} inv={state.inventory:.1f}"
             ),
@@ -225,7 +206,6 @@ class AvellanedaStoikovMM(Strategy):
         intents: list[OrderIntent] = []
 
         for m in markets:
-            # Pre-flight: why is this market being skipped?
             if not self._passes_filters(m):
                 rej_filter += 1
                 continue
@@ -235,23 +215,26 @@ class AvellanedaStoikovMM(Strategy):
                 continue
             state = self._get_state(m.market_id)
             if state.trade_buckets and vpin(state.trade_buckets, n_buckets=20) > self.vpin_threshold:
+                state.paused = True
                 rej_vpin += 1
                 continue
+            state.paused = False
             if abs(state.inventory) >= self.max_inventory:
                 rej_inv += 1
                 continue
-            # Build tentative side/price for EV check
+            # Side + market price selection
             if state.inventory >= 0:
+                side = Side.NO
                 market_price = max(0.02, min(0.98, m.no_price))
             else:
+                side = Side.YES
                 market_price = max(0.02, min(0.98, m.yes_price))
+            # Market-maker EV gate
             if not mm_ev_gate_passes(quoted_spread=m.spread, market_price=market_price):
                 rej_ev += 1
                 continue
-            # All gates passed — call full evaluate() for the OrderIntent
-            intent = await self.evaluate(m)
-            if intent:
-                intents.append(intent)
+            # All gates passed — build the intent directly
+            intents.append(self._build_intent(m, state, regime_call, side, market_price))
 
         logger.info(
             f"A-S cycle: {len(markets)} markets → {len(intents)} intents "
@@ -261,10 +244,35 @@ class AvellanedaStoikovMM(Strategy):
         return intents
 
     def record_fill(self, market_id: str, side: Side, price: float, size: float) -> None:
-        """Update state after a fill."""
+        """Update state after a fill.
+
+        Called by the scheduler after a successful paper or live fill.
+        Updates the inventory used for reservation-price skew and
+        appends to the trade_buckets ring used by VPIN adverse-selection
+        detection.
+        """
         state = self._get_state(market_id)
         state.fills += 1
         if side == Side.YES:
             state.inventory += size
         else:
             state.inventory -= size
+
+        # Record the trade for VPIN. TradeBucket stores signed
+        # buy/sell volume; buying YES = buy pressure, buying NO = sell
+        # pressure on the underlying YES token. Cap the ring at 200
+        # buckets so memory doesn't grow unbounded.
+        state.trade_buckets.append(TradeBucket(
+            buy_volume=size if side == Side.YES else 0.0,
+            sell_volume=size if side == Side.NO else 0.0,
+        ))
+        if len(state.trade_buckets) > 200:
+            state.trade_buckets = state.trade_buckets[-200:]
+
+    def record_close(self, market_id: str, side: Side, size: float) -> None:
+        """Reverse the inventory delta when a position is closed."""
+        state = self._get_state(market_id)
+        if side == Side.YES:
+            state.inventory -= size
+        else:
+            state.inventory += size

@@ -69,16 +69,24 @@ def entropy_edge_passes(market: MarketState) -> bool:
     """
     Gate: only run expensive specialists when the cheap entropy screener
     has flagged at least SPECIALIST_MIN_EDGE edge between the model's
-    probability and the market-implied price.
+    probability and the market price.
+
+    NOTE: we compare `model_probability` to `yes_price`, NOT `mid_price`.
+    `mid_price` on a Polymarket MarketState is computed as
+    (yes + no) / 2 which is always ~0.5 because yes + no ≈ 1. Using it
+    as the market reference made the gate trivially pass for any market
+    where model_p was far from 0.5, even when model_p == yes_price (no
+    actual edge) — which in turn fired expensive LLM specialists on
+    zero-edge markets.
 
     This keeps daily specialist cost in the ~$5-8 range instead of $50+.
     """
     min_edge = settings.specialists.min_edge
     model_p = float(getattr(market, "model_probability", 0) or 0)
-    mid = float(getattr(market, "mid_price", 0) or getattr(market, "yes_price", 0) or 0)
-    if model_p <= 0 or mid <= 0:
+    market_p = float(getattr(market, "yes_price", 0) or 0)
+    if model_p <= 0 or model_p >= 1 or market_p <= 0 or market_p >= 1:
         return False
-    edge = abs(model_p - mid)
+    edge = abs(model_p - market_p)
     return edge >= min_edge
 
 

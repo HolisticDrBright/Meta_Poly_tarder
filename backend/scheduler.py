@@ -445,6 +445,17 @@ class TradingScheduler:
                 closed = self.state.close_position(signal.position.market_id)
                 if closed:
                     self.exit_manager.clear_tracking(closed.market_id)
+                    # Notify A-S so its inventory decrements when one
+                    # of its positions closes.
+                    if closed.strategy == StrategyName.AVELLANEDA:
+                        try:
+                            self.avellaneda.record_close(
+                                market_id=closed.market_id,
+                                side=closed.side,
+                                size=closed.size_usdc,
+                            )
+                        except Exception as e:
+                            logger.debug(f"A-S record_close failed: {e}")
                     # Feed the learning loop: grade the original decision.
                     self._log_outcome(closed)
                     self.duckdb.insert_trade(
@@ -815,18 +826,14 @@ class TradingScheduler:
 
             if approved:
                 logger.info(f"Executing {len(approved)} approved trades")
-                # Build a lookup of REAL current token prices so paper
-                # fills reflect the actual book instead of the strategy's
-                # intended limit price. For YES side we pass yes_price,
-                # for NO side we pass no_price — the price of the token
-                # actually being bought.
+                # Build a per-intent lookup of REAL current token prices
+                # so paper fills reflect the actual book instead of the
+                # strategy's intended limit price. For YES side pass
+                # yes_price, for NO side pass no_price — whichever token
+                # is actually being bought.
                 from backend.strategies.base import Side
-                price_lookup: dict[str, float] = {}
-                for m in self.state.markets:
-                    price_lookup[m.market_id] = m.yes_price  # default
-                # Overwrite per-intent with the side-specific price
-                per_intent_prices: dict[str, float] = {}
                 market_by_id = {m.market_id: m for m in self.state.markets}
+                per_intent_prices: dict[str, float] = {}
                 for si in approved:
                     m = market_by_id.get(si.intent.market_id)
                     if m is None:
@@ -840,6 +847,21 @@ class TradingScheduler:
                     if result.success:
                         self.risk.record_trade(si.intent)
                         self.state.trades_today += 1
+
+                        # Notify the Avellaneda-Stoikov MM so its
+                        # inventory + VPIN trade buckets stay in sync
+                        # with actual fills. Without this A-S thinks it's
+                        # always flat and keeps quoting the same side.
+                        if si.intent.strategy == StrategyName.AVELLANEDA:
+                            try:
+                                self.avellaneda.record_fill(
+                                    market_id=si.intent.market_id,
+                                    side=si.intent.side,
+                                    price=result.fill_price,
+                                    size=result.fill_size,
+                                )
+                            except Exception as e:
+                                logger.debug(f"A-S record_fill failed: {e}")
 
                         # Track position in shared state
                         pos = self.executor.to_position(si.intent, result)

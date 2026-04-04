@@ -104,7 +104,7 @@ class RiskConfig:
     max_portfolio_exposure: float = _float(os.getenv("MAX_PORTFOLIO_EXPOSURE"), 0.80)
     max_single_market_pct: float = _float(os.getenv("MAX_SINGLE_MARKET_PCT"), 0.15)
     max_daily_loss_pct: float = _float(os.getenv("MAX_DAILY_LOSS_PCT"), 0.10)
-    max_trade_size_usdc: float = _float(os.getenv("MAX_TRADE_SIZE_USDC"), 150)
+    max_trade_size_usdc: float = _float(os.getenv("MAX_TRADE_SIZE_USDC"), 30)
     min_balance_usdc: float = _float(os.getenv("MIN_BALANCE_USDC"), 10)
 
 
