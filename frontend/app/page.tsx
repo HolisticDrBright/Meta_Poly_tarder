@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import dynamic from "next/dynamic";
-import { LayoutDashboard, BarChart3, Briefcase, History, BookOpen, Settings } from "lucide-react";
+import { LayoutDashboard, BarChart3, Briefcase, History, BookOpen, Settings, Brain } from "lucide-react";
 
 import { useMarkets, usePortfolioStats, usePositions, useSignals } from "@/hooks/useSignals";
 import { useWebSocket } from "@/hooks/useWebSocket";
@@ -16,6 +16,7 @@ const MarketsTab = dynamic(() => import("@/components/rork/tabs/MarketsTab"), { 
 const PortfolioTab = dynamic(() => import("@/components/rork/tabs/PortfolioTab"), { ssr: false });
 const HistoryTab = dynamic(() => import("@/components/rork/tabs/HistoryTab"), { ssr: false });
 const JournalTab = dynamic(() => import("@/components/rork/tabs/JournalTab"), { ssr: false });
+const IntelligenceTab = dynamic(() => import("@/components/rork/tabs/IntelligenceTab"), { ssr: false });
 const SettingsTab = dynamic(() => import("@/components/rork/tabs/SettingsTab"), { ssr: false });
 
 const TABS = [
@@ -23,6 +24,7 @@ const TABS = [
   { key: "markets", label: "Markets", Icon: BarChart3 },
   { key: "portfolio", label: "Portfolio", Icon: Briefcase },
   { key: "history", label: "History", Icon: History },
+  { key: "intelligence", label: "Learning", Icon: Brain },
   { key: "journal", label: "Journal", Icon: BookOpen },
   { key: "settings", label: "Settings", Icon: Settings },
 ] as const;
@@ -102,6 +104,7 @@ export default function Page() {
             {tab === "markets" && <MarketsTab />}
             {tab === "portfolio" && <PortfolioTab />}
             {tab === "history" && <HistoryTab />}
+            {tab === "intelligence" && <IntelligenceTab />}
             {tab === "journal" && <JournalTab />}
             {tab === "settings" && <SettingsTab />}
           </>

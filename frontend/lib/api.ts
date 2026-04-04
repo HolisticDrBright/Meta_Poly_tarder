@@ -174,6 +174,58 @@ export function executionResume() {
   return request<any>("/api/v1/execution/resume", { method: "POST" });
 }
 
+// ── Prediction Intelligence (learning loop) ───────────────────
+
+export function fetchIntelligenceHealth() {
+  return request<any>("/api/v1/intelligence/health");
+}
+
+export function fetchPerformanceSummary() {
+  return request<any>("/api/v1/intelligence/performance/summary");
+}
+
+export function fetchPerformanceSignals() {
+  return request<any>("/api/v1/intelligence/performance/signals");
+}
+
+export function fetchPerformanceErrors() {
+  return request<any>("/api/v1/intelligence/performance/errors");
+}
+
+export function fetchCalibration() {
+  return request<any>("/api/v1/intelligence/calibration");
+}
+
+export function fetchCalibrationByTheme() {
+  return request<any>("/api/v1/intelligence/calibration/by-theme");
+}
+
+export function fetchCalibrationByRegime() {
+  return request<any>("/api/v1/intelligence/calibration/by-regime");
+}
+
+export function fetchCurrentWeights() {
+  return request<any>("/api/v1/intelligence/weights/current");
+}
+
+export function fetchWeightProposals() {
+  return request<any>("/api/v1/intelligence/weights/proposals");
+}
+
+export function deployWeightProposal(proposalId: string) {
+  return request<any>(`/api/v1/intelligence/weights/proposals/${proposalId}/deploy`, {
+    method: "POST",
+  });
+}
+
+export function revertWeights() {
+  return request<any>("/api/v1/intelligence/weights/revert", { method: "POST" });
+}
+
+export function triggerAnalysis() {
+  return request<any>("/api/v1/intelligence/analysis/trigger", { method: "POST" });
+}
+
 // ── System ─────────────────────────────────────────────────────
 
 export function fetchHealth() {
