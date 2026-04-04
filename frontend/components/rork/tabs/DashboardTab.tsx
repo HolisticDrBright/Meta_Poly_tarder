@@ -75,7 +75,9 @@ export default function DashboardTab() {
   }, []);
 
   const totalPnL = (stats.realized_pnl || 0) + (stats.unrealized_pnl || 0);
-  const totalBalance = (stats.balance || 10000) + totalPnL;
+  // Real starting capital from backend, not hardcoded $10k
+  const startingCapital = (stats as any).starting_capital || stats.balance || 0;
+  const totalBalance = startingCapital + totalPnL;
   const pnlColor = totalPnL >= 0 ? Colors.green : Colors.coral;
   const todayColor = (stats.realized_pnl || 0) >= 0 ? Colors.green : Colors.coral;
 
@@ -91,7 +93,9 @@ export default function DashboardTab() {
   const winRate = tradeStats
     ? (tradeStats.win_rate || 0).toFixed(1)
     : (wins + losses > 0 ? ((wins / (wins + losses)) * 100).toFixed(1) : "0");
-  const roi = totalPnL !== 0 ? ((totalPnL / 10000) * 100).toFixed(1) : "0";
+  const roi = startingCapital > 0 && totalPnL !== 0
+    ? ((totalPnL / startingCapital) * 100).toFixed(1)
+    : "0";
 
   const regime: RegimeInfo = useMemo(() => {
     if (markets.length === 0) return { label: "Scanning...", confidence: "low" as const };

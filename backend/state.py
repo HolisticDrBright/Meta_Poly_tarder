@@ -48,7 +48,8 @@ class SystemState:
     # Portfolio
     equity_curve: list[dict] = field(default_factory=list)
     daily_pnl: list[dict] = field(default_factory=list)
-    balance: float = 10_000.0
+    balance: float = 300.0
+    starting_capital: float = 300.0
     total_exposure: float = 0.0
     unrealized_pnl: float = 0.0
     realized_pnl: float = 0.0
@@ -194,6 +195,7 @@ class SystemState:
 
         return {
             "balance": self.balance,
+            "starting_capital": self.starting_capital,
             "total_exposure": self.total_exposure,
             "unrealized_pnl": self.unrealized_pnl,
             "realized_pnl": db_pnl,

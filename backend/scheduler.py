@@ -160,6 +160,12 @@ class TradingScheduler:
         from backend.state import system_state
         self.state = system_state
         self.state.paper_trading = settings.trading.paper_trading
+        # Wire the real starting capital so the dashboard and ROI calculations
+        # use $300 (or whatever STARTING_CAPITAL is set to) instead of the
+        # legacy $10k default baked into state.py.
+        self.state.starting_capital = settings.trading.starting_capital
+        if self.state.balance <= 0 or self.state.balance == 10_000.0:
+            self.state.balance = settings.trading.starting_capital
 
         # Local accumulator
         self._all_intents: list[OrderIntent] = []
