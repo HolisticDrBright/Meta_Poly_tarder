@@ -62,10 +62,14 @@ class AvellanedaStoikovMM(Strategy):
         kappa: float = 1.5,
         session_hours: float = 24,
         vpin_threshold: float = 0.70,
-        min_liquidity: float = 50_000,
-        min_hours_to_close: float = 48,
+        # Polymarket-realistic defaults. The legacy $50k / 48h values
+        # were inherited from CEX market-making and rejected virtually
+        # every Polymarket market — the universe of markets with $50k+
+        # liquidity and 48h+ to close is tiny. Tuned for Polymarket.
+        min_liquidity: float = 2_000,
+        min_hours_to_close: float = 12,
         max_inventory: float = 500,
-        quote_size_usdc: float = 25,
+        quote_size_usdc: float = 15,
         bankroll: float = 300.0,
         kelly_fraction_mult: float = 0.25,
         max_trade_usdc: float = 30.0,
@@ -211,11 +215,49 @@ class AvellanedaStoikovMM(Strategy):
         )
 
     async def evaluate_batch(self, markets: list[MarketState]) -> list[OrderIntent]:
-        intents = []
+        # Per-cycle rejection counters so we can see at INFO level why
+        # no trades are firing without having to enable DEBUG.
+        rej_filter = 0
+        rej_regime = 0
+        rej_vpin = 0
+        rej_inv = 0
+        rej_ev = 0
+        intents: list[OrderIntent] = []
+
         for m in markets:
+            # Pre-flight: why is this market being skipped?
+            if not self._passes_filters(m):
+                rej_filter += 1
+                continue
+            regime_call = classify_regime(m)
+            if not regime_allows_strategy(regime_call.regime, self.name):
+                rej_regime += 1
+                continue
+            state = self._get_state(m.market_id)
+            if state.trade_buckets and vpin(state.trade_buckets, n_buckets=20) > self.vpin_threshold:
+                rej_vpin += 1
+                continue
+            if abs(state.inventory) >= self.max_inventory:
+                rej_inv += 1
+                continue
+            # Build tentative side/price for EV check
+            if state.inventory >= 0:
+                market_price = max(0.02, min(0.98, m.no_price))
+            else:
+                market_price = max(0.02, min(0.98, m.yes_price))
+            if not mm_ev_gate_passes(quoted_spread=m.spread, market_price=market_price):
+                rej_ev += 1
+                continue
+            # All gates passed — call full evaluate() for the OrderIntent
             intent = await self.evaluate(m)
             if intent:
                 intents.append(intent)
+
+        logger.info(
+            f"A-S cycle: {len(markets)} markets → {len(intents)} intents "
+            f"(rej: filter={rej_filter} regime={rej_regime} vpin={rej_vpin} "
+            f"inv={rej_inv} ev={rej_ev})"
+        )
         return intents
 
     def record_fill(self, market_id: str, side: Side, price: float, size: float) -> None:
