@@ -58,32 +58,73 @@ async def set_mode(req: ModeRequest):
     if req.mode not in ("paper", "live"):
         raise HTTPException(400, "Mode must be 'paper' or 'live'")
 
-    # Update the execution orchestrator
-    _orchestrator = TradeOrchestrator(mode=req.mode)
+    # The standalone TradeOrchestrator is used by the execution API's own
+    # /trade endpoint. Constructing it can block (CLOB handshake over VPN),
+    # so push it onto a thread and skip it entirely if we're just going back
+    # to paper.
+    import asyncio as _asyncio
+    try:
+        if req.mode == "live":
+            _orchestrator = await _asyncio.to_thread(TradeOrchestrator, "live")
+        else:
+            _orchestrator = TradeOrchestrator(mode="paper")
+    except Exception as e:
+        logger.error(f"Orchestrator init failed: {e}")
+        # Still fall through — the scheduler executor below is what actually
+        # trades, so the UI should not be blocked by this.
+        _orchestrator = None
 
-    # Update the global system state so the dashboard reflects the change
+    live_balance: float | None = None
+
+    # Update the global system state + the scheduler's OrderExecutor so the
+    # trading loop actually routes to real CLOB orders.
     try:
         from backend.state import system_state
         system_state.paper_trading = (req.mode == "paper")
 
+        executor = getattr(system_state, "_executor", None)
+        exec_status: dict = {}
+        if executor is not None:
+            # set_mode is sync and cheap for paper; for live it may touch
+            # py-clob-client import, so run in a thread for safety.
+            exec_status = await _asyncio.to_thread(executor.set_mode, req.mode)
+            if not exec_status.get("ok"):
+                raise HTTPException(
+                    400,
+                    f"Scheduler executor refused mode switch: "
+                    f"{exec_status.get('error', 'unknown error')}",
+                )
+
         if req.mode == "live":
-            # Reset P&L counters for live tracking
-            system_state.realized_pnl = 0.0
-            system_state.unrealized_pnl = 0.0
+            # Reset today's counters for the live session
             system_state.trades_today = 0
-            system_state.total_exposure = 0.0
-            # Fetch real wallet balance
-            try:
-                real_balance = await _orchestrator.engine.get_balance()
-                if real_balance > 0:
-                    system_state.balance = real_balance
-            except Exception:
-                pass
-    except Exception:
-        pass
+            # Fetch real wallet balance off the event loop
+            if _orchestrator is not None:
+                try:
+                    real_balance = await _asyncio.to_thread(
+                        lambda: _orchestrator.engine.client.get_balance()
+                        if _orchestrator.engine.client else 0
+                    )
+                    if real_balance:
+                        live_balance = float(real_balance) if not isinstance(
+                            real_balance, dict
+                        ) else float(real_balance.get("balance", 0))
+                        if live_balance and live_balance > 0:
+                            system_state.balance = live_balance
+                except Exception as e:
+                    logger.warning(f"Balance fetch failed: {e}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"State update on mode switch failed: {e}")
 
     logger.info(f"Execution mode changed to: {req.mode}")
-    return {"mode": req.mode, "status": "active", "paper_trading": req.mode == "paper"}
+    return {
+        "mode": req.mode,
+        "status": "active",
+        "paper_trading": req.mode == "paper",
+        "live_balance": live_balance,
+    }
 
 
 @router.post("/kill")

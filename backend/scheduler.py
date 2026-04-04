@@ -665,6 +665,16 @@ class TradingScheduler:
         if not self._all_intents:
             return
 
+        # Keep the executor's paper/live flag in sync with system state
+        # on every tick, so Go Live takes effect immediately.
+        try:
+            self.executor.paper_trading = self.state.paper_trading
+            if not self.state.paper_trading and self.executor._live_client is None:
+                # Lazy-init live client if it wasn't built in __init__
+                self.executor.set_mode("live")
+        except Exception as e:
+            logger.error(f"Executor mode sync failed: {e}")
+
         try:
             # Score and rank
             scored = self.aggregator.score(self._all_intents)
@@ -749,6 +759,9 @@ class TradingScheduler:
 
         # Share the DuckDB connection with the API layer for trade queries
         self.state._duckdb = self.duckdb
+        # Share the executor with the execution API so Go Live actually flips
+        # the scheduler's trade path over to real CLOB orders.
+        self.state._executor = self.executor
 
         # Restore persisted state from previous run
         import asyncio

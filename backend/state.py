@@ -68,6 +68,10 @@ class SystemState:
     # Shared DuckDB reference (set by scheduler, used by API for trade queries)
     _duckdb: Any = field(default=None, repr=False)
 
+    # Shared OrderExecutor reference (set by scheduler, used by execution API
+    # to flip paper<->live without restarting)
+    _executor: Any = field(default=None, repr=False)
+
     # WebSocket broadcast callback (set by main.py)
     _broadcast_fn: Optional[Callable] = field(default=None, repr=False)
 

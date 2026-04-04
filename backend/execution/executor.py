@@ -182,6 +182,11 @@ class OrderExecutor:
         self.paper_trading = paper_trading
         self._paper_fills: list[ExecutionResult] = []
         self._live_client: Optional[CLOBLiveClient] = None
+        # Stash credentials so we can lazily spin up the live client when
+        # the user flips Paper → Live at runtime.
+        self._private_key = private_key
+        self._wallet_address = wallet_address
+        self._signature_type = signature_type
 
         if not paper_trading and private_key:
             self._live_client = CLOBLiveClient(
@@ -189,6 +194,37 @@ class OrderExecutor:
                 wallet_address=wallet_address,
                 signature_type=signature_type,
             )
+
+    def set_mode(self, mode: str) -> dict:
+        """
+        Flip between paper and live at runtime.
+
+        Returns a small status dict so callers (the /api/v1/execution/mode
+        endpoint) can surface the result to the dashboard.
+        """
+        mode = (mode or "").lower()
+        if mode not in ("paper", "live"):
+            return {"ok": False, "error": f"invalid mode: {mode}"}
+
+        if mode == "paper":
+            self.paper_trading = True
+            return {"ok": True, "mode": "paper"}
+
+        # Going live — require signing credentials.
+        if not self._private_key:
+            return {
+                "ok": False,
+                "error": "POLYMARKET_PRIVATE_KEY not configured — cannot go live",
+            }
+
+        if self._live_client is None:
+            self._live_client = CLOBLiveClient(
+                private_key=self._private_key,
+                wallet_address=self._wallet_address,
+                signature_type=self._signature_type,
+            )
+        self.paper_trading = False
+        return {"ok": True, "mode": "live"}
 
     async def execute(self, scored: ScoredIntent) -> ExecutionResult:
         """Execute a single scored intent."""
