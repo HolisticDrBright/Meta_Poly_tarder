@@ -169,9 +169,10 @@ export default function DashboardTab() {
     });
   }, [positions]);
 
+  const tradesToday = stats.trades_today || 0;
   const quickStats = [
     { label: "Markets Scanned", value: (stats.markets_count || markets.length).toString(), Icon: Activity },
-    { label: "Total Trades", value: totalTrades > 0 ? totalTrades.toLocaleString() : tradesToday.toString(), Icon: Zap },
+    { label: "Total Trades", value: (totalTrades > 0 ? totalTrades : tradesToday).toLocaleString(), Icon: Zap },
     { label: "Win Rate", value: `${winRate}%`, Icon: Target },
   ];
 
