@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.api import markets, signals, portfolio, whale, jet, entropy
+from backend.api import markets, signals, portfolio, whale, jet, entropy, admin
 from backend.config import settings
 from backend.data_layer.storage import DuckDBStorage, SQLiteState
 from backend.observability.logger import setup_logging
@@ -167,6 +167,7 @@ app.include_router(whale.router, prefix="/api/whale", tags=["Whale Tracker"])
 # Alias: /api/whale-tracker routes to the same whale router
 app.include_router(whale.router, prefix="/api/whale-tracker", tags=["Whale Tracker Alias"])
 app.include_router(jet.router, prefix="/api/jet", tags=["Jet Tracker"])
+app.include_router(admin.router, prefix="/api/admin", tags=["Admin"])
 
 # Prediction Intelligence Layer
 try:
