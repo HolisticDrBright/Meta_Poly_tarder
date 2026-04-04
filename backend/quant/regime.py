@@ -39,7 +39,15 @@ class RegimeCall:
 
 
 def classify(market: MarketState) -> RegimeCall:
-    """Classify a MarketState into one of four regimes."""
+    """Classify a MarketState into one of four regimes.
+
+    Thresholds calibrated for Polymarket specifically:
+      - Typical Polymarket spreads are 2-8% (much wider than CEX).
+      - Typical daily volumes span $100 to $100k+.
+      - Liquidity (top-of-book depth) is often $1k-$20k.
+    The old CEX-style thresholds (spread > 5% = illiquid) classified
+    nearly every Polymarket market as ILLIQUID_NOISE and blocked trading.
+    """
     vol = float(getattr(market, "volume_24h", 0) or 0)
     liq = float(getattr(market, "liquidity", 0) or 0)
     spread = float(getattr(market, "spread", 0) or 0)
@@ -55,25 +63,30 @@ def classify(market: MarketState) -> RegimeCall:
             emphasis_roles=("Time Decay Analyst", "Statistics Expert", "Moderator"),
         )
 
-    # Illiquid noise — skip expensive specialist work here
-    if liq < 2000 or vol < 1000 or spread > 0.05:
+    # Illiquid noise — only truly untradeable markets. Anything with
+    # meaningful liquidity and a spread below 12% is tradeable on
+    # Polymarket even if daily volume is modest.
+    if liq < 500 or spread > 0.12:
         return RegimeCall(
             regime=Regime.ILLIQUID_NOISE,
             confidence=0.8,
-            reasoning=f"liq=${liq:.0f} vol24h=${vol:.0f} spread={spread:.3f}",
+            reasoning=f"liq=${liq:.0f} spread={spread:.3f}",
             emphasis_roles=("Devil's Advocate",),
         )
 
-    # Information-driven — high volume, tight spread
-    if vol > 50_000 and spread < 0.02:
+    # Information-driven — real volume moving into the market, tight
+    # enough spread that direction matters more than spread capture.
+    # Polymarket threshold: $20k+ daily volume AND spread under 4%.
+    if vol > 20_000 and spread < 0.04:
         return RegimeCall(
             regime=Regime.INFORMATION_DRIVEN,
-            confidence=min(1.0, vol / 250_000),
+            confidence=min(1.0, vol / 100_000),
             reasoning=f"High vol ${vol:,.0f}, tight spread {spread:.3f}",
             emphasis_roles=("Statistics Expert", "Crypto/Macro Analyst", "Moderator"),
         )
 
-    # Default: consensus grind
+    # Default: consensus grind — moderate vol, tradeable spread. This
+    # is where A-S earns its keep.
     return RegimeCall(
         regime=Regime.CONSENSUS_GRIND,
         confidence=0.6,

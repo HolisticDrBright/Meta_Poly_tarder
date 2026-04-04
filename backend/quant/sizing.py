@@ -186,10 +186,13 @@ def kelly_size_usdc(
 # This is the policy file — tune based on the learning loop's per-regime
 # performance reports once enough outcomes accumulate.
 REGIME_STRATEGY_POLICY: dict[Regime, set[StrategyName]] = {
-    # Information-driven: news + real mispricing. Run the ensemble +
-    # entropy screener. Skip market making (A-S) because spreads are
-    # tight and the edge is in direction, not in spread capture.
+    # Information-driven: real volume, tight-ish spread, news flowing.
+    # Directional strategies dominate (ensemble, entropy), BUT A-S is
+    # still allowed because a 2-4% spread on high volume is the best
+    # possible MM environment. The MM EV gate and VPIN guard prevent
+    # it from being picked off by informed flow.
     Regime.INFORMATION_DRIVEN: {
+        StrategyName.AVELLANEDA,
         StrategyName.ENTROPY,
         StrategyName.ENSEMBLE_AI,
         StrategyName.ARB,
@@ -197,24 +200,26 @@ REGIME_STRATEGY_POLICY: dict[Regime, set[StrategyName]] = {
         StrategyName.COPY,
     },
 
-    # Consensus-grind: range-bound, moderate volume, no news. A-S and
-    # arb only — spread capture is the only edge here. Skip the
-    # ensemble because there's nothing for it to reason about.
+    # Consensus-grind: the A-S natural habitat. Spread capture is the
+    # primary edge, directional strategies are also allowed because
+    # slow drift + mispricing still happens here.
     Regime.CONSENSUS_GRIND: {
         StrategyName.AVELLANEDA,
         StrategyName.ARB,
         StrategyName.ENTROPY,
+        StrategyName.ENSEMBLE_AI,
+        StrategyName.COPY,
     },
 
     # Resolution cliff: <24h to resolve. Theta harvester dominates;
-    # skip long-horizon strategies.
+    # arb if the book is crossed.
     Regime.RESOLUTION_CLIFF: {
         StrategyName.THETA,
         StrategyName.ARB,
     },
 
-    # Illiquid noise: wide spreads, low volume. Don't trade at all —
-    # any "edge" is fill-realism noise. Empty set = everything skipped.
+    # Illiquid noise: only truly untradeable markets land here now
+    # (spread > 12% or liq < $500). Everything is blocked.
     Regime.ILLIQUID_NOISE: set(),
 }
 
