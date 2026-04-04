@@ -142,15 +142,33 @@ class Position:
 
     @property
     def pnl(self) -> float:
-        if self.side == Side.YES:
-            return (self.current_price - self.entry_price) * self.size_usdc
-        return (self.entry_price - self.current_price) * self.size_usdc
+        """
+        Realized+unrealized P&L in USDC.
+
+        Polymarket YES and NO are two distinct ERC-1155 outcome tokens.
+        For BOTH sides the rule is the same: you paid `entry_price` per
+        share, you now hold shares worth `current_price` each, and
+        `current_price` on a Position is always the price of the token
+        you actually own (set in scheduler.py from market.yes_price or
+        market.no_price). So the P&L is just mark-to-market:
+
+            shares        = size_usdc / entry_price
+            current_value = shares * current_price
+            pnl           = current_value - size_usdc
+                          = size_usdc * (current_price / entry_price - 1)
+
+        The old formula treated NO as a short on YES, which is wrong —
+        buying NO means you WANT NO to go up, not down.
+        """
+        if self.entry_price <= 0:
+            return 0.0
+        return self.size_usdc * (self.current_price / self.entry_price - 1.0)
 
     @property
     def pnl_pct(self) -> float:
-        if self.entry_price == 0:
+        if self.entry_price <= 0:
             return 0.0
-        return self.pnl / (self.entry_price * self.size_usdc) * 100
+        return (self.current_price / self.entry_price - 1.0) * 100
 
 
 # ── strategy ABC ────────────────────────────────────────────────────

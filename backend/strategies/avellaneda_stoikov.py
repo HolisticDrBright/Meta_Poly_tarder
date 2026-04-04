@@ -79,7 +79,16 @@ class AvellanedaStoikovMM(Strategy):
             return False
         if m.hours_to_close < self.min_hours_to_close:
             return False
-        if m.mid_price < 0.05 or m.mid_price > 0.95:
+        # Skip markets that are effectively resolved. `mid_price` in this
+        # codebase is computed as (yes+no)/2 which is ~0.5 even for
+        # near-certain markets (yes + no ≈ 1), so we must check the
+        # actual token prices, not the synthetic mid.
+        if m.yes_price < 0.05 or m.yes_price > 0.95:
+            return False
+        if m.no_price < 0.05 or m.no_price > 0.95:
+            return False
+        # Spread too wide → likely dead market
+        if m.spread > 0.10:
             return False
         return True
 
