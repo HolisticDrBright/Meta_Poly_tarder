@@ -32,46 +32,116 @@ from backend.strategies.base import StrategyName
 
 # ── Fee constants ───────────────────────────────────────────
 
-# Polymarket charges 2% on realized profit. We model this as a 1%
-# round-trip haircut on the expected edge (half on entry, half on exit)
-# since the fee is only on the profit slice, not the stake.
-POLYMARKET_FEE_ROUND_TRIP = 0.02
+# Polymarket charges a 2% taker fee on winnings (not stakes). For a bet
+# priced at `market_price` that pays off with probability `p`, the
+# per-dollar fee cost is approximately:
+#
+#     fee_cost_per_dollar ≈ fee * p * (1 - market_price)
+#
+# For a small-edge trade symmetric around 0.5, that's ≈ fee / 4 ≈ 0.5%,
+# not the full 2%. The previous version of this module applied the
+# full 2% as a flat haircut, which was double-counting and made the
+# EV gate reject almost every Polymarket opportunity.
+POLYMARKET_WINNINGS_FEE = 0.02
 
 # Assumed slippage beyond the visible best-bid/ask on paper fills.
 # Real CLOB slippage is observed empirically from the trade log once
 # the learning loop has enough outcomes.
-DEFAULT_EXPECTED_SLIPPAGE = 0.005
+DEFAULT_EXPECTED_SLIPPAGE = 0.003
 
 
-# ── 1. EV gate ──────────────────────────────────────────────
+# ── 1. EV gate for directional strategies ──────────────────
+
+def expected_fee_cost(fair_probability: float, market_price: float, fee: float = POLYMARKET_WINNINGS_FEE) -> float:
+    """
+    Fee cost per dollar staked, accounting for Polymarket charging
+    `fee` on winnings (not stakes). Symmetric in side: if you buy YES
+    at p and expect to win with probability fair, the fee per $ is
+    fee * fair * (1 - p).
+    """
+    fair = max(0.001, min(0.999, fair_probability))
+    mkt = max(0.001, min(0.999, market_price))
+    return fee * fair * (1.0 - mkt)
+
 
 def ev_gate_passes(
     fair_probability: float,
     market_price: float,
     spread: float,
-    fee: float = POLYMARKET_FEE_ROUND_TRIP,
+    fee: float = POLYMARKET_WINNINGS_FEE,
     extra_slippage: float = DEFAULT_EXPECTED_SLIPPAGE,
 ) -> bool:
     """
-    Return True only if the signed edge is large enough to cover fees,
-    half the spread, and expected slippage.
+    Return True only if the directional edge is large enough to cover
+    fees (on winnings), half the spread (taker crossing the book), and
+    expected slippage.
 
-        required_edge = fee + spread/2 + slippage
+        required_edge = fee_cost_on_winnings + spread/2 + slippage
         signed_edge   = |fair_p − market_p|
 
-    This is a hard filter. Any trade proposal where the edge is smaller
-    than the breakeven threshold is rejected outright — not scaled down.
-    Scaling down a negative-EV trade still produces a negative-EV trade,
-    just smaller. Better to skip.
+    Hard filter — negative-EV trades are rejected, not scaled.
     """
     edge = abs(fair_probability - market_price)
-    required = fee + (spread / 2.0) + extra_slippage
+    fee_cost = expected_fee_cost(fair_probability, market_price, fee)
+    required = fee_cost + (spread / 2.0) + extra_slippage
     return edge >= required
 
 
-def required_edge_for_market(spread: float, fee: float = POLYMARKET_FEE_ROUND_TRIP) -> float:
-    """Minimum edge a strategy needs before any trade on this market is EV+."""
-    return fee + (spread / 2.0) + DEFAULT_EXPECTED_SLIPPAGE
+def required_edge_for_market(
+    fair_probability: float,
+    market_price: float,
+    spread: float,
+    fee: float = POLYMARKET_WINNINGS_FEE,
+) -> float:
+    """Minimum directional edge a strategy needs before the trade is EV+."""
+    return (
+        expected_fee_cost(fair_probability, market_price, fee)
+        + (spread / 2.0)
+        + DEFAULT_EXPECTED_SLIPPAGE
+    )
+
+
+# ── 1b. EV gate for market makers ──────────────────────────
+#
+# A market maker's edge is NOT a fair-vs-market mispricing — it's the
+# spread it captures by providing liquidity on both sides. A-S with
+# zero inventory produces fair_p == yes_price, giving signed edge = 0,
+# which incorrectly fails ev_gate_passes. Market makers need their
+# own EV check:
+#
+#     expected_capture = spread_captured * fill_rate_estimate
+#     required         = adverse_selection + fee_on_winnings + slippage
+#
+# For a symmetric quoted spread of `s` around the mid, the MM earns
+# roughly s/2 per round-trip fill (capture half the spread on each
+# side). That must exceed the 2% fee on winnings (≈ fee * 0.25 per $
+# for mid-priced markets) plus expected adverse selection and slippage.
+
+def mm_ev_gate_passes(
+    quoted_spread: float,
+    market_price: float,
+    fee: float = POLYMARKET_WINNINGS_FEE,
+    extra_slippage: float = DEFAULT_EXPECTED_SLIPPAGE,
+    adverse_selection_bps: float = 30.0,
+) -> bool:
+    """
+    EV check for market makers. The MM captures (quoted_spread / 2) per
+    round-trip fill on average. That must cover fees + slippage +
+    adverse selection (the cost of being picked off when a toxic trader
+    hits your quote).
+
+        capture   = quoted_spread / 2
+        required  = fee*p*(1-p) + slippage + adverse_selection
+        passes    = capture >= required
+    """
+    capture = quoted_spread / 2.0
+    # Fee on winnings is symmetric: at the mid, winning_prob ≈ market_p
+    # and payoff ≈ (1 - market_p), so fee_cost ≈ fee * p * (1-p).
+    mkt = max(0.001, min(0.999, market_price))
+    fee_cost = fee * mkt * (1.0 - mkt)
+    adverse = adverse_selection_bps / 10000.0
+    required = fee_cost + extra_slippage + adverse
+    return capture >= required
 
 
 # ── 2. Kelly sizing ─────────────────────────────────────────

@@ -23,10 +23,12 @@ from backend.quant.avellaneda_math import (
 )
 from backend.quant.regime import classify as classify_regime, Regime
 from backend.quant.sizing import (
-    ev_gate_passes,
-    kelly_size_usdc,
+    mm_ev_gate_passes,
     regime_allows_strategy,
 )
+import logging
+
+logger = logging.getLogger(__name__)
 from backend.strategies.base import (
     MarketState,
     OrderIntent,
@@ -158,44 +160,38 @@ class AvellanedaStoikovMM(Strategy):
             kappa=self.kappa,
         )
 
-        # Side selection + fair-value framing. For A-S the "fair value" is
-        # the inventory-skewed reservation price from compute_quotes, and
-        # the "market price" is the real current token price. If we're
-        # short (inventory<0) we want to buy YES; if long/neutral we want
-        # to buy NO (the equivalent of selling YES exposure).
+        # Side selection. On Polymarket YES and NO are separate tokens;
+        # "selling YES" isn't possible, so we flip the inventory-skewed
+        # quoting into "buy NO" when we want to reduce long exposure.
         if state.inventory >= 0:
             side = Side.NO
             market_price = max(0.02, min(0.98, market_state.no_price))
-            # For NO side, the reservation price is 1 - r in YES-space.
-            fair_p = max(0.02, min(0.98, 1.0 - quotes.reservation_price))
         else:
             side = Side.YES
             market_price = max(0.02, min(0.98, market_state.yes_price))
-            fair_p = max(0.02, min(0.98, quotes.reservation_price))
 
-        # EV gate: only trade when the edge beats fees + half-spread + slippage.
-        # This is the biggest single filter — most A-S opportunities on
-        # Polymarket are structurally negative-EV after fees.
-        if not ev_gate_passes(
-            fair_probability=fair_p,
+        # Market-maker EV gate: a MM's edge isn't fair-vs-market; it's
+        # the spread it captures. The gate refuses trades only when the
+        # captured spread can't cover fees + slippage + adverse selection.
+        if not mm_ev_gate_passes(
+            quoted_spread=market_state.spread,
             market_price=market_price,
-            spread=market_state.spread,
         ):
+            logger.debug(
+                f"A-S EV gate rejected {market_state.market_id[:10]}: "
+                f"spread={market_state.spread:.4f} too thin to profit after fees"
+            )
             return None
 
-        # Kelly position sizing — bet proportional to edge, not flat.
-        # Replaces the old flat $25/trade that was blowing up the risk budget.
-        size_usdc = kelly_size_usdc(
-            fair_probability=fair_p,
-            market_price=market_price,
-            bankroll=self.bankroll,
-            kelly_fraction_multiplier=self.kelly_fraction_mult,
-            max_trade_usdc=self.max_trade_usdc,
-        )
-        if size_usdc <= 0:
-            return None
+        # Market making doesn't scale size with edge the way directional
+        # strategies do — you quote a fixed clip per tick and let volume
+        # fill you. We use a fraction of the per-trade cap, scaled down
+        # by how much of your bankroll would be exposed if this market
+        # filled all the way up to max_inventory.
+        size_usdc = min(self.max_trade_usdc * 0.5, self.bankroll * 0.05)
+        size_usdc = round(max(1.0, size_usdc), 2)
 
-        edge_bps = (fair_p - market_price) * 10000
+        captured_bps = (market_state.spread / 2.0) * 10000
         return OrderIntent(
             strategy=self.name,
             market_id=market_state.market_id,
@@ -205,12 +201,12 @@ class AvellanedaStoikovMM(Strategy):
             order_type=OrderType.LIMIT,
             price=market_price,
             size_usdc=size_usdc,
-            confidence=min(0.95, abs(fair_p - market_price) / 0.05),
+            confidence=min(0.95, market_state.spread / 0.05),
             reason=(
-                f"A-S MM [{regime_call.regime.value}]: fair={fair_p:.4f} "
-                f"mkt={market_price:.4f} edge={edge_bps:+.0f}bps "
-                f"size=${size_usdc:.2f} r={quotes.reservation_price:.4f} "
-                f"inv={state.inventory:.1f}"
+                f"A-S MM [{regime_call.regime.value}]: "
+                f"mkt={market_price:.4f} spread={market_state.spread:.4f} "
+                f"capture={captured_bps:.0f}bps size=${size_usdc:.2f} "
+                f"r={quotes.reservation_price:.4f} inv={state.inventory:.1f}"
             ),
         )
 

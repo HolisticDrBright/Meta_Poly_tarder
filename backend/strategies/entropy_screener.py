@@ -21,8 +21,11 @@ from backend.quant.entropy import (
     quarter_kelly,
     score_market,
 )
+import logging
 from backend.quant.regime import classify as classify_regime
-from backend.quant.sizing import ev_gate_passes, regime_allows_strategy
+from backend.quant.sizing import ev_gate_passes, regime_allows_strategy, required_edge_for_market
+
+logger = logging.getLogger(__name__)
 from backend.strategies.base import (
     MarketState,
     OrderIntent,
@@ -113,6 +116,12 @@ class EntropyScreener(Strategy):
             market_price=market_p,
             spread=market_state.spread,
         ):
+            req = required_edge_for_market(fair_p, market_p, market_state.spread)
+            logger.debug(
+                f"Entropy EV gate rejected {market_state.market_id[:10]}: "
+                f"edge={abs(fair_p - market_p):.4f} < required={req:.4f} "
+                f"(fair={fair_p:.3f} mkt={market_p:.3f} spread={market_state.spread:.4f})"
+            )
             return None
 
         f_quarter = quarter_kelly(model_p, mp)
