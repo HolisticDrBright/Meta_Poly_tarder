@@ -135,6 +135,10 @@ class Position:
     opened_at: datetime = field(
         default_factory=lambda: datetime.now(timezone.utc)
     )
+    # Link back to the prediction_intelligence decision record so that
+    # when the position closes we can log the outcome and grade the
+    # original bet (Brier score, pnl, hit-rate, etc.).
+    decision_id: str = ""
 
     @property
     def pnl(self) -> float:

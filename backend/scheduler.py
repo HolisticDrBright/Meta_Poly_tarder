@@ -119,6 +119,16 @@ class TradingScheduler:
             openai_api_key=settings.ai.openai_api_key,
         )
 
+        # Prediction Intelligence — logs every decision + outcome so the
+        # retrospective analyzer can grade the bot and tune weights.
+        # Soft-imported so a broken PI install never takes the scheduler down.
+        self._decision_logger = None
+        try:
+            from prediction_intelligence.logger import DecisionLogger
+            self._decision_logger = DecisionLogger()
+        except Exception as e:
+            logger.warning(f"Decision logger unavailable — learning loop off: {e}")
+
         # Shared state (accessible by API routes)
         from backend.state import system_state
         self.state = system_state
@@ -402,6 +412,8 @@ class TradingScheduler:
                 closed = self.state.close_position(signal.position.market_id)
                 if closed:
                     self.exit_manager.clear_tracking(closed.market_id)
+                    # Feed the learning loop: grade the original decision.
+                    self._log_outcome(closed)
                     self.duckdb.insert_trade(
                         market_id=closed.market_id,
                         question=closed.question[:200],
@@ -660,6 +672,73 @@ class TradingScheduler:
         except Exception as e:
             logger.error(f"State restoration failed: {e}")
 
+    # ── Prediction Intelligence hooks ───────────────────────────
+    def _log_decision(self, intent, result) -> str:
+        """
+        Log an opened position to the prediction_intelligence decision
+        store. Returns the decision_id (or "" if logging is disabled).
+        Never raises.
+        """
+        if self._decision_logger is None:
+            return ""
+        try:
+            from prediction_intelligence.logger import DecisionRecord
+            record = DecisionRecord(
+                market_id=intent.market_id,
+                market_title=(intent.question or "")[:200],
+                implied_probability=result.fill_price,
+                fair_probability=getattr(intent, "fair_probability", 0.5) or 0.5,
+                edge_estimate=getattr(intent, "edge", 0.0) or 0.0,
+                opportunity_score=getattr(intent, "confidence", 0.0) or 0.0,
+                classification="LIVE" if not result.paper else "PAPER",
+                paper_position_size=result.fill_size,
+                paper_entry_price=result.fill_price,
+                risk_approved=True,
+                signal_weights={"strategy": intent.strategy.value},
+            )
+            return self._decision_logger.log_decision(record)
+        except Exception as e:
+            logger.warning(f"log_decision failed: {e}")
+            return ""
+
+    def _log_outcome(self, closed_position) -> None:
+        """
+        Log a closed position as an outcome for the learning loop.
+        Computes a simple Brier score from the realized pnl direction.
+        Never raises.
+        """
+        if self._decision_logger is None or not getattr(closed_position, "decision_id", ""):
+            return
+        try:
+            from prediction_intelligence.logger import OutcomeRecord
+            from datetime import datetime, timezone
+            # Entry thesis was "price moves in favor of side". If pnl > 0,
+            # the thesis was correct → actual_outcome = 1, else 0.
+            actual = 1.0 if closed_position.pnl > 0 else 0.0
+            entry = closed_position.entry_price or 0.5
+            # Brier score = (forecast - actual)^2 using entry price as the
+            # implied forecast (we may not have the full fair_p here).
+            forecast = entry if closed_position.side.value == "YES" else (1.0 - entry)
+            brier = (forecast - actual) ** 2
+            hours = max(
+                0.0,
+                (datetime.now(timezone.utc) - closed_position.opened_at).total_seconds() / 3600.0,
+            )
+            outcome = OutcomeRecord(
+                decision_id=closed_position.decision_id,
+                market_id=closed_position.market_id,
+                resolution_timestamp=datetime.now(timezone.utc).isoformat(),
+                actual_outcome=actual,
+                forecast_error=abs(forecast - actual),
+                brier_score=brier,
+                paper_pnl=closed_position.pnl,
+                resolution_source="exit_manager",
+                time_to_resolution_hours=hours,
+            )
+            self._decision_logger.log_outcome(outcome)
+        except Exception as e:
+            logger.warning(f"log_outcome failed: {e}")
+
     async def aggregate_and_execute(self) -> None:
         """Score all intents, run risk checks, and execute approved trades."""
         if not self._all_intents:
@@ -682,6 +761,25 @@ class TradingScheduler:
             # Risk check
             approved = self.risk.check_batch(scored)
 
+            # ── Dedupe: never open a new position on a market+side where we
+            # already hold one. Avellaneda-Stoikov re-quotes every tick, so
+            # without this guard it stacks dozens of identical positions on
+            # the same market, inflating win counts and exposure.
+            held_keys = {(p.market_id, p.side) for p in self.state.positions}
+            deduped = []
+            for si in approved:
+                key = (si.intent.market_id, si.intent.side)
+                if key in held_keys:
+                    continue
+                held_keys.add(key)  # also blocks same-batch duplicates
+                deduped.append(si)
+            if len(deduped) < len(approved):
+                logger.info(
+                    f"Deduped {len(approved) - len(deduped)} duplicate intents "
+                    f"(market+side already held)"
+                )
+            approved = deduped
+
             if approved:
                 logger.info(f"Executing {len(approved)} approved trades")
                 results = await self.executor.execute_batch(approved)
@@ -694,6 +792,10 @@ class TradingScheduler:
                         # Track position in shared state
                         pos = self.executor.to_position(si.intent, result)
                         if pos:
+                            # Log to prediction_intelligence and attach the
+                            # decision_id to the position so we can score the
+                            # outcome on close.
+                            pos.decision_id = self._log_decision(si.intent, result)
                             self.state.add_position(pos)
 
                         # Store in DuckDB

@@ -14,6 +14,14 @@ function getConfidenceColor(c: string) {
   return Colors.coral;
 }
 
+interface TradeStats {
+  total_trades: number;
+  wins: number;
+  losses: number;
+  total_pnl: number;
+  win_rate: number;
+}
+
 export default function DashboardTab() {
   const stats = usePortfolioStore((s) => s.stats);
   const positions = usePortfolioStore((s) => s.positions);
@@ -21,6 +29,7 @@ export default function DashboardTab() {
   const markets = useMarketStore((s) => s.markets);
   const selectMarket = useMarketStore((s) => s.selectMarket);
   const [chartWidth, setChartWidth] = useState(500);
+  const [tradeStats, setTradeStats] = useState<TradeStats | null>(null);
 
   useEffect(() => {
     setChartWidth(Math.min(window.innerWidth - 80, 600));
@@ -29,19 +38,42 @@ export default function DashboardTab() {
     return () => window.removeEventListener("resize", h);
   }, []);
 
+  // Pull the same authoritative stats the History tab uses, so Dashboard
+  // and History always agree. Refresh every 30s.
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      try {
+        const r = await fetch("/api/portfolio/trade-stats");
+        if (!r.ok) return;
+        const d = await r.json();
+        if (!cancelled && d && typeof d.total_trades === "number") {
+          setTradeStats(d);
+        }
+      } catch {}
+    }
+    load();
+    const id = setInterval(load, 30000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+
   const totalPnL = (stats.realized_pnl || 0) + (stats.unrealized_pnl || 0);
   const totalBalance = (stats.balance || 10000) + totalPnL;
   const pnlColor = totalPnL >= 0 ? Colors.green : Colors.coral;
   const todayColor = (stats.realized_pnl || 0) >= 0 ? Colors.green : Colors.coral;
 
-  // Derive wins/losses from realized P&L and position count
-  // Each A-S market maker cycle trades ~$25 per fill, so estimate total trades from P&L
-  const estimatedTotalTrades = totalPnL > 0 ? Math.max(Math.round(totalPnL / 25), stats.positions_count || 0) : stats.positions_count || 0;
-  const tradesToday = stats.trades_today || 0;
-  const totalTrades = Math.max(estimatedTotalTrades, tradesToday);
-  const wins = totalTrades > 0 && totalPnL > 0 ? Math.round(totalTrades * 0.72) : positions.filter((p: any) => (p.pnl || 0) > 0).length;
-  const losses = totalTrades > 0 ? totalTrades - wins : positions.filter((p: any) => (p.pnl || 0) < 0).length;
-  const winRate = wins + losses > 0 ? ((wins / (wins + losses)) * 100).toFixed(1) : "0";
+  // Real wins/losses from DuckDB (same source as History tab). Fall back to
+  // open-position counts only while trade-stats hasn't loaded yet.
+  const wins = tradeStats
+    ? tradeStats.wins
+    : positions.filter((p: any) => (p.pnl || 0) > 0).length;
+  const losses = tradeStats
+    ? tradeStats.losses
+    : positions.filter((p: any) => (p.pnl || 0) < 0).length;
+  const totalTrades = tradeStats ? tradeStats.total_trades : wins + losses;
+  const winRate = tradeStats
+    ? (tradeStats.win_rate || 0).toFixed(1)
+    : (wins + losses > 0 ? ((wins / (wins + losses)) * 100).toFixed(1) : "0");
   const roi = totalPnL !== 0 ? ((totalPnL / 10000) * 100).toFixed(1) : "0";
 
   const regime: RegimeInfo = useMemo(() => {
@@ -189,7 +221,7 @@ export default function DashboardTab() {
           <div className="w-px h-6" style={{ backgroundColor: Colors.surfaceBorder }} />
           <div className="text-center"><span className="text-base font-bold font-mono" style={{ color: Colors.textPrimary }}>{stats.sharpe_ratio?.toFixed(3) || "—"}</span><div className="text-[10px] font-medium uppercase tracking-wider" style={{ color: Colors.textTertiary }}>Sharpe</div></div>
           <div className="w-px h-6" style={{ backgroundColor: Colors.surfaceBorder }} />
-          <div className="text-center"><span className="text-base font-bold font-mono" style={{ color: Colors.cyan }}>{stats.win_rate ? `${(stats.win_rate * 100).toFixed(0)}%` : "—"}</span><div className="text-[10px] font-medium uppercase tracking-wider" style={{ color: Colors.textTertiary }}>Accuracy</div></div>
+          <div className="text-center"><span className="text-base font-bold font-mono" style={{ color: Colors.cyan }}>{tradeStats ? `${tradeStats.win_rate.toFixed(0)}%` : "—"}</span><div className="text-[10px] font-medium uppercase tracking-wider" style={{ color: Colors.textTertiary }}>Accuracy</div></div>
         </div>
       </div>
 
