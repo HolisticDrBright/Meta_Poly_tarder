@@ -94,6 +94,37 @@ class SystemState:
     # ── Market updates ──────────────────────────────────────────
 
     def update_markets(self, markets: list[MarketState]) -> None:
+        """Merge fresh market data from the Gamma refresh while preserving
+        derived fields that other subsystems (ensemble, entropy screener,
+        specialist orchestrator) may have populated since the last refresh.
+
+        Without this merge, every 45s refresh wipes `model_probability`,
+        `kl_divergence`, and `entropy_bits` back to zero because
+        `_gamma_to_market_state` builds fresh MarketState instances with
+        dataclass defaults. The ensemble only runs every 3 min on top 10
+        markets, so in the intervening 2m 45s the entropy screener sees
+        model_probability=0 on every market and emits no signals.
+        Same problem bit the specialist orchestrator's gate, which
+        requires model_probability > 0.
+
+        Merge rule: for each incoming market, if we already have a
+        MarketState with the same market_id that has a non-default
+        model_probability, carry those derived fields forward onto the
+        new instance before replacing. All price/liquidity/volume data
+        still comes from the fresh Gamma payload.
+        """
+        prior_by_id: dict[str, MarketState] = {m.market_id: m for m in self.markets}
+        for m in markets:
+            old = prior_by_id.get(m.market_id)
+            if old is None:
+                continue
+            # Preserve derived fields computed elsewhere in the pipeline.
+            if old.model_probability and old.model_probability > 0:
+                m.model_probability = old.model_probability
+            if old.kl_divergence:
+                m.kl_divergence = old.kl_divergence
+            # entropy_bits is computed fresh from yes_price in _gamma_to_market_state
+            # so we do NOT preserve the old value — it should always match current price.
         self.markets = markets
         self.last_update = datetime.now(timezone.utc)
 
