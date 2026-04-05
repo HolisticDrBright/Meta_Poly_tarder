@@ -167,9 +167,16 @@ async def trade_stats():
         rows = result.fetchall()
         stats = dict(zip(cols, rows[0])) if rows else {}
         if stats:
-            total = stats.get("total_trades", 0) or 0
             wins = stats.get("wins", 0) or 0
-            stats["win_rate"] = (wins / total * 100) if total > 0 else 0.0
+            losses = stats.get("losses", 0) or 0
+            breakeven = stats.get("breakeven", 0) or 0
+            resolved = wins + losses
+            # Win rate is wins / (wins + losses). Excluding breakeven is
+            # critical — historical trades from the old RESOLUTION EXIT
+            # bug closed at $0 pnl and would otherwise poison the rate.
+            stats["win_rate"] = (wins / resolved * 100) if resolved > 0 else 0.0
+            stats["resolved_trades"] = resolved
+            stats["breakeven_trades"] = breakeven
             # Coerce all numeric fields to JSON-safe Python floats. DuckDB's
             # Decimal type and float("inf") both break strict JSON parsers,
             # which in turn crashes the Dashboard client code.
