@@ -331,6 +331,103 @@ class TradingScheduler:
         except Exception as e:
             logger.error(f"A-S MM failed: {e}")
 
+    async def run_settlement_watcher(self) -> None:
+        """Close positions at the REAL Gamma resolution price when markets resolve.
+
+        Before this watcher existed, the exit_manager's RESOLUTION EXIT
+        rule would close positions an hour before actual resolution at
+        the pre-resolution mid price, stealing every theta-harvester win.
+        Now we query Gamma for each open position's market and detect
+        resolution via outcomePrices collapsing to [0,1] or [1,0] and
+        closed=True. When that happens, we force-close the position at
+        the actual resolution outcome (1.0 for YES-wins, 0.0 for NO-wins)
+        so the real payoff is booked.
+        """
+        if not self.state.positions:
+            return
+        try:
+            # Deduplicate market_ids across positions
+            market_ids = list({p.market_id for p in self.state.positions})
+            if not market_ids:
+                return
+
+            settled: list[tuple[str, float, str]] = []  # (market_id, resolved_yes_price, outcome)
+            for mid in market_ids:
+                try:
+                    gm = await self.gamma.get_market(mid)
+                except Exception as e:
+                    logger.debug(f"Settlement check {mid[:10]}: gamma fetch failed: {e}")
+                    continue
+                if gm is None:
+                    continue
+                # A Gamma market is resolved when closed=True and the
+                # outcomePrices collapse to (1.0, 0.0) or (0.0, 1.0).
+                if not getattr(gm, "closed", False):
+                    continue
+                yp = float(getattr(gm, "yes_price", 0.5) or 0.5)
+                # Only settle when the resolution is unambiguous
+                if yp >= 0.99:
+                    settled.append((mid, 1.0, "YES"))
+                elif yp <= 0.01:
+                    settled.append((mid, 0.0, "NO"))
+                # else: closed but prices haven't collapsed → skip for now
+
+            for mid, resolved_yes_price, outcome in settled:
+                # Find every position on this market (shouldn't be more
+                # than one per side due to dedupe, but handle the list)
+                matching = [p for p in self.state.positions if p.market_id == mid]
+                for pos in matching:
+                    # The settlement price depends on which side we hold.
+                    # If we hold YES and it resolved YES → we paid entry,
+                    # get back 1.0. If we hold YES and it resolved NO →
+                    # worth 0.0. Same logic mirrored for NO positions.
+                    if pos.side == Side.YES:
+                        final_price = resolved_yes_price
+                    else:
+                        final_price = 1.0 - resolved_yes_price
+                    pos.current_price = final_price
+                    realized = pos.pnl  # will use the final_price we just set
+
+                    closed = self.state.close_position(pos.market_id)
+                    if not closed:
+                        continue
+                    self.exit_manager.clear_tracking(closed.market_id)
+                    # Notify A-S if that was its position (even though
+                    # disabled by default, legacy positions may exist)
+                    if closed.strategy == StrategyName.AVELLANEDA:
+                        try:
+                            self.avellaneda.record_close(
+                                market_id=closed.market_id,
+                                side=closed.side,
+                                size=closed.size_usdc,
+                            )
+                        except Exception:
+                            pass
+                    self._log_outcome(closed)
+                    self.duckdb.insert_trade(
+                        market_id=closed.market_id,
+                        question=closed.question[:200],
+                        side=closed.side.value,
+                        price=closed.current_price,
+                        size_usdc=closed.size_usdc,
+                        strategy=f"{closed.strategy.value}_settled",
+                        paper=self.state.paper_trading,
+                        pnl=realized,
+                        trade_type="close",
+                        exit_reason=f"SETTLED: {outcome}@{final_price:.2f} pnl=${realized:+.2f}",
+                    )
+                    logger.info(
+                        f"SETTLEMENT: {closed.question[:40]} resolved {outcome} → "
+                        f"{closed.side.value} pos worth ${realized:+.2f}"
+                    )
+                    await self.state.broadcast("position_settled", {
+                        "market_id": closed.market_id,
+                        "outcome": outcome,
+                        "pnl": realized,
+                    })
+        except Exception as e:
+            logger.error(f"Settlement watcher failed: {e}")
+
     async def run_binance_arb(self) -> None:
         """Scan for Polymarket-vs-Binance crypto price gaps."""
         if not getattr(settings.strategies, "binance_arb", True) or not self.state.markets:
@@ -1082,6 +1179,20 @@ class TradingScheduler:
             IntervalTrigger(minutes=5),
             id="leaderboard",
             name="Leaderboard refresh",
+        )
+
+        # Settlement watcher — closes positions at the REAL Gamma
+        # resolution price (1.0 or 0.0) when markets resolve. Without
+        # this, positions would just hold forever on unresolved markets
+        # until a take-profit / stop-loss / near-certain-with-pnl>0
+        # exit fires (and the RESOLUTION EXIT fallback now requires
+        # meaningful profit, so it no longer fires premature zero-pnl
+        # closes).
+        self.scheduler.add_job(
+            self.run_settlement_watcher,
+            IntervalTrigger(seconds=60),
+            id="settlement_watcher",
+            name="Gamma settlement watcher",
         )
 
         # Aggregation + execution

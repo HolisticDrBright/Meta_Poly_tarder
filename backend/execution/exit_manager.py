@@ -26,8 +26,14 @@ class ExitRule:
 
     take_profit_pct: float = 0.30     # 30% profit → close
     stop_loss_pct: float = -0.20      # 20% loss → close
-    resolution_hours: float = 1.0     # auto-close when <1h to resolution
-    resolution_min_profit: float = 0  # only auto-close if at least break-even
+    # Resolution auto-close: ONLY fires on profitable positions. The
+    # previous default of min_profit=0 allowed the rule to close at
+    # break-even one hour before actual resolution, stealing every
+    # theta-harvester win (entered at 0.95, exited at 0.95, left the
+    # 5% resolution payoff uncaptured). The settlement watcher now
+    # handles T-0 closes at the real outcome price.
+    resolution_hours: float = 1.0
+    resolution_min_profit: float = 0.10  # at least 10¢ profit before early exit
     trailing_stop_pct: float = 0.0    # 0 = disabled, >0 = trailing stop from peak
 
 
@@ -114,15 +120,32 @@ class ExitManager:
                         urgency="immediate",
                     )
 
-        # 4. Resolution auto-close
-        if market and market.hours_to_close <= self.rules.resolution_hours:
-            if pos.pnl >= self.rules.resolution_min_profit:
-                return ExitSignal(
-                    position=pos,
-                    reason=f"RESOLUTION EXIT: {market.hours_to_close:.1f}h left, PnL=${pos.pnl:.2f}",
-                    pnl=pos.pnl,
-                    urgency="normal",
-                )
+        # 4. Resolution auto-close — ONLY fires if the position is
+        # meaningfully profitable (pnl > min_profit > 0). The original
+        # rule closed at T-1h regardless of pnl, which stole every
+        # theta-harvester win: positions entered at 0.95 and exited at
+        # 0.95 an hour before actual resolution, leaving the 5% payoff
+        # on the table. Now the settlement watcher (scheduler.run_
+        # settlement_watcher) handles real resolution at T-0 by
+        # closing at the actual outcome price (0.0 or 1.0).
+        #
+        # This early exit only fires on markets that are ALREADY in
+        # profit — use it to lock in gains on illiquid near-resolution
+        # markets where the book may vanish before the watcher can
+        # react. Losers hold to actual resolution instead of
+        # crystallizing the loss prematurely.
+        if (
+            market
+            and market.hours_to_close <= self.rules.resolution_hours
+            and pos.pnl > self.rules.resolution_min_profit
+            and self.rules.resolution_min_profit > 0
+        ):
+            return ExitSignal(
+                position=pos,
+                reason=f"RESOLUTION EXIT: {market.hours_to_close:.1f}h left, PnL=${pos.pnl:.2f}",
+                pnl=pos.pnl,
+                urgency="normal",
+            )
 
         # 5. Near-certain resolution (price >0.95 or <0.05)
         # Only exit if the position is profitable — a position that's
