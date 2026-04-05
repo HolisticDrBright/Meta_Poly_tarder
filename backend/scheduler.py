@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -259,8 +260,8 @@ class TradingScheduler:
         "senators", "sabres", "blue jackets", "wild",
     })
     # Pre-compiled regex for word-boundary team matching.
-    # Import at module level to avoid class-body scoping issues.
-    import re
+    # `re` imported at module level — class-body generators can't see
+    # class-scoped names in Python 3.
     _TEAM_PATTERN = re.compile(
         r"\b(?:" + "|".join(re.escape(t) for t in _SPORTS_TEAMS) + r")\b",
         re.IGNORECASE,
