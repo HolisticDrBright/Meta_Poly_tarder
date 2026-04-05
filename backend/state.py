@@ -9,8 +9,8 @@ API routes read from it.
 
 from __future__ import annotations
 
-import asyncio
 import logging
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
@@ -65,6 +65,9 @@ class SystemState:
     paper_trading: bool = True
     scheduler_running: bool = False
     last_update: Optional[datetime] = None
+
+    # Threading lock for mutation safety
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     # Shared DuckDB reference (set by scheduler, used by API for trade queries)
     _duckdb: Any = field(default=None, repr=False)
@@ -158,17 +161,24 @@ class SystemState:
     # ── Position updates ────────────────────────────────────────
 
     def add_position(self, pos: Position) -> None:
-        self.positions.append(pos)
-        self.total_exposure += pos.size_usdc
+        with self._lock:
+            self.positions.append(pos)
+            self.total_exposure += pos.size_usdc
+            self.balance -= pos.size_usdc
 
-    def close_position(self, market_id: str) -> Optional[Position]:
-        for i, p in enumerate(self.positions):
-            if p.market_id == market_id:
+    def close_position(self, market_id: str, condition_id: str | None = None) -> Optional[Position]:
+        with self._lock:
+            for i, p in enumerate(self.positions):
+                if p.market_id != market_id:
+                    continue
+                if condition_id is not None and getattr(p, "condition_id", None) != condition_id:
+                    continue
                 closed = self.positions.pop(i)
                 self.total_exposure -= closed.size_usdc
                 self.realized_pnl += closed.pnl
+                self.balance += closed.size_usdc + closed.pnl
                 return closed
-        return None
+            return None
 
     def get_positions_serialized(self) -> list[dict]:
         return [

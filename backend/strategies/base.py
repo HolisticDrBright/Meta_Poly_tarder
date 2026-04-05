@@ -37,6 +37,7 @@ class StrategyName(str, Enum):
     JET = "jet"
     COPY = "copy"
     THETA = "theta"
+    MANUAL = "manual"
 
 
 # ── data models ─────────────────────────────────────────────────────

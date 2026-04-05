@@ -33,7 +33,7 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 
-WEIGHTS_FILE = Path("data/active_weights.json")
+WEIGHTS_FILE = Path(__file__).resolve().parent.parent.parent / "data" / "active_weights.json"
 MIN_OUTCOMES_PER_KEY = 20
 MAX_CHANGE_PER_CYCLE = 0.08
 MIN_WEIGHT = 0.02

@@ -117,9 +117,9 @@ class EnsembleAI(Strategy):
         openai_api_key: str = "",
         min_confidence: float = 0.6,
         min_edge: float = 0.05,
-        bankroll: float = 10_000,
+        bankroll: float = 300,
         kelly_fraction: float = 0.25,
-        max_trade_usdc: float = 150,
+        max_trade_usdc: float = 4,
     ) -> None:
         self.anthropic_key = anthropic_api_key
         self.openai_key = openai_api_key
@@ -378,7 +378,10 @@ class EnsembleAI(Strategy):
         # Kelly sizing
         from backend.quant.entropy import quarter_kelly
 
-        f = quarter_kelly(result.ensemble_probability, market_state.yes_price)
+        if side == Side.YES:
+            f = quarter_kelly(result.ensemble_probability, market_state.yes_price)
+        else:
+            f = quarter_kelly(1.0 - result.ensemble_probability, market_state.no_price)
         size = min(abs(f) * self.bankroll, self.max_trade_usdc)
         if size < 1.0:
             return None

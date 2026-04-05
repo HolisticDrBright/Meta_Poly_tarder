@@ -222,64 +222,69 @@ class TradingScheduler:
             entropy_bits=market_entropy(gm.yes_price),
         )
 
-    # Sports & esports keywords — friend's trade data shows sports is the
-    # only net-losing category. Filter at the market-refresh level so no
-    # strategy even sees these markets. Includes team names because Gamma
-    # API often categorizes games generically and question text only has
-    # "TeamA vs. TeamB" with no sport keyword.
-    _SPORTS_KEYWORDS = frozenset({
-        # Sport names
+    # Sports & esports filter. Two tiers:
+    #   _SPORTS_ALWAYS: generic sport/league names — substring match is safe
+    #   _SPORTS_TEAMS: team names that are also common words (magic, heat,
+    #       thunder, rockets, kings, giants, angels, wild, jets, rams, etc.)
+    #       — require word-boundary match via regex to avoid false positives
+    #       like "Will Magic Mushroom stocks…" or "Thunder Bay port expansion"
+    _SPORTS_ALWAYS = frozenset({
         "sports", "nfl", "nba", "mlb", "nhl", "soccer", "tennis",
         "football", "basketball", "baseball", "hockey", "ufc", "mma",
         "boxing", "cricket", "f1", "formula 1", "nascar", "rugby",
         "golf", "pga", "atp", "wta", "la liga", "premier league",
         "serie a", "bundesliga", "champions league", "world cup",
-        # Esports
         "esports", "counter-strike", "valorant", "dota", "league of legends",
         "lol:", "overwatch", "call of duty", "fortnite", "rainbow six",
-        # MLB teams (the Marlins/Yankees gap)
+    })
+    _SPORTS_TEAMS = frozenset({
         "yankees", "marlins", "dodgers", "mets", "cubs", "red sox",
         "braves", "astros", "phillies", "padres", "orioles", "guardians",
         "rangers", "royals", "twins", "tigers", "white sox", "reds",
         "brewers", "cardinals", "pirates", "nationals", "diamondbacks",
         "rockies", "giants", "athletics", "rays", "blue jays", "mariners",
-        "angels",
-        # NBA teams
-        "lakers", "celtics", "warriors", "bucks", "nuggets", "76ers",
-        "sixers", "knicks", "nets", "heat", "bulls", "cavaliers",
+        "angels", "lakers", "celtics", "warriors", "bucks", "nuggets",
+        "76ers", "sixers", "knicks", "nets", "heat", "bulls", "cavaliers",
         "pacers", "hawks", "raptors", "spurs", "suns", "mavericks",
         "clippers", "grizzlies", "pelicans", "wizards", "pistons",
         "hornets", "timberwolves", "blazers", "kings", "thunder",
-        "rockets", "magic",
-        # NFL teams
-        "chiefs", "eagles", "49ers", "ravens", "cowboys", "bills",
-        "dolphins", "bengals", "lions", "vikings", "packers", "steelers",
-        "chargers", "seahawks", "broncos", "colts", "texans", "jaguars",
-        "titans", "saints", "falcons", "panthers", "buccaneers",
-        "patriots", "jets", "rams", "bears", "commanders", "cardinals",
-        # NHL teams
+        "rockets", "magic", "chiefs", "eagles", "49ers", "ravens",
+        "cowboys", "bills", "dolphins", "bengals", "lions", "vikings",
+        "packers", "steelers", "chargers", "seahawks", "broncos", "colts",
+        "texans", "jaguars", "titans", "saints", "falcons", "panthers",
+        "buccaneers", "patriots", "jets", "rams", "bears", "commanders",
         "bruins", "maple leafs", "canadiens", "penguins", "blackhawks",
         "red wings", "flyers", "oilers", "avalanche", "lightning",
-        "hurricanes", "panthers", "predators", "kraken", "canucks",
-        "flames", "senators", "sabres", "blue jackets", "wild",
+        "hurricanes", "predators", "kraken", "canucks", "flames",
+        "senators", "sabres", "blue jackets", "wild",
     })
+    # Pre-compiled regex for word-boundary team matching
+    import re as _re
+    _TEAM_PATTERN = _re.compile(
+        r"\b(?:" + "|".join(_re.escape(t) for t in _SPORTS_TEAMS) + r")\b",
+        _re.IGNORECASE,
+    )
 
     @classmethod
     def _is_sports_market(cls, gm) -> bool:
         """True if a GammaMarket is a sports/esports market to filter."""
         cat = (gm.category or "").lower()
         q = (gm.question or "").lower()
-        for kw in cls._SPORTS_KEYWORDS:
+        # Tier 1: generic sport keywords — substring match
+        for kw in cls._SPORTS_ALWAYS:
             if kw in cat or kw in q:
                 return True
-        # Also check raw tags from Gamma API if present
+        # Tier 2: team names — word-boundary regex to avoid false positives
+        if cls._TEAM_PATTERN.search(q) or cls._TEAM_PATTERN.search(cat):
+            return True
+        # Tier 3: raw Gamma API tags
         raw_tags = gm.raw.get("tags") or []
         if isinstance(raw_tags, list):
             for tag in raw_tags:
                 if isinstance(tag, dict):
                     tag = tag.get("label", "")
                 tag_lower = str(tag).lower()
-                for kw in cls._SPORTS_KEYWORDS:
+                for kw in cls._SPORTS_ALWAYS:
                     if kw in tag_lower:
                         return True
         return False
@@ -390,8 +395,9 @@ class TradingScheduler:
                         self._ensemble_last_run[market.market_id] = time.time()
                         if result.debates and result.ensemble_confidence > 0:
                             market.model_probability = result.ensemble_probability
-                            market.kl_divergence = abs(
-                                result.ensemble_probability - market.yes_price
+                            from backend.quant.entropy import kl_divergence as _kl
+                            market.kl_divergence = _kl(
+                                result.ensemble_probability, market.yes_price
                             )
                             logger.info(
                                 f"Ensemble OK: {market.question[:40]} → "
@@ -897,21 +903,30 @@ class TradingScheduler:
                             import statistics
                             mean_ret = statistics.mean(returns)
                             std_ret = statistics.stdev(returns) if len(returns) > 1 else 0.001
-                            # Annualize: assume ~100 data points per day at 15s intervals
+                            # Annualize: equity snapshots every 15s = 5760/day.
+                            import math as _m
+                            points_per_year = 5760 * 365
                             self.state.sharpe_ratio = round(
-                                (mean_ret / max(std_ret, 0.0001)) * (365 ** 0.5), 3
+                                (mean_ret / max(std_ret, 0.0001)) * _m.sqrt(points_per_year), 3
                             )
                 except Exception:
                     pass
 
-            # Compute win rate from trades_today and realized P&L
-            if self.state.trades_today > 0:
-                # Estimate from exit manager results
-                total_exits = sum(1 for p in self.state.equity_curve[-100:] if p.get("realized_pnl", 0) != 0)
-                if total_exits > 0:
-                    self.state.win_rate = min(0.95, max(0.05,
-                        self.state.realized_pnl / max(abs(self.state.realized_pnl) + 1, 1)
-                    ))
+            # Win rate from DuckDB trade stats (real resolved trades).
+            # Previous formula was nonsensical (P&L magnitude, not hit rate).
+            try:
+                stats = self.duckdb.query(
+                    "SELECT COUNT(CASE WHEN pnl > 0 THEN 1 END) as wins, "
+                    "COUNT(CASE WHEN pnl < 0 THEN 1 END) as losses "
+                    "FROM trades WHERE trade_type = 'close'"
+                )
+                if stats:
+                    w = int(stats[0].get("wins", 0) or 0)
+                    l = int(stats[0].get("losses", 0) or 0)
+                    if w + l > 0:
+                        self.state.win_rate = w / (w + l)
+            except Exception:
+                pass
 
         except Exception as e:
             logger.error(f"Position price update failed: {e}")
@@ -1034,7 +1049,7 @@ class TradingScheduler:
             # Restore from SQLite (saved every 2 minutes)
             equity = self.sqlite.load_strategy_state("__equity__")
             if equity:
-                self.state.balance = equity.get("balance", 10000)
+                self.state.balance = equity.get("balance", settings.trading.starting_capital)
                 self.state.realized_pnl = equity.get("realized_pnl", 0)
                 self.state.trades_today = equity.get("trades_today", 0)
                 logger.info(f"Restored from SQLite: balance=${self.state.balance:.2f}, pnl=${self.state.realized_pnl:.2f}")
@@ -1127,7 +1142,11 @@ class TradingScheduler:
                 market_theme = (market.category or "")[:50]
 
             # Edge classification buckets based on Kelly-sized fraction
-            edge_est = getattr(intent, "edge", 0.0) or 0.0
+            # OrderIntent has no 'edge' field — compute from kl_divergence
+            # or kelly_fraction so the learning loop gets real edge data.
+            edge_est = abs(getattr(intent, "kl_divergence", 0.0) or 0.0)
+            if edge_est == 0 and hasattr(intent, "kelly_fraction"):
+                edge_est = abs(intent.kelly_fraction or 0.0)
             abs_edge = abs(edge_est)
             if abs_edge >= 0.15:
                 edge_classification = "large"
@@ -1199,7 +1218,11 @@ class TradingScheduler:
 
     async def aggregate_and_execute(self) -> None:
         """Score all intents, run risk checks, and execute approved trades."""
-        if not self._all_intents:
+        # Atomic swap — capture current intents and reset for next cycle.
+        # Prevents race where a strategy job appends between score() and
+        # clear(), silently losing signals.
+        intents_snapshot, self._all_intents = self._all_intents, []
+        if not intents_snapshot:
             return
 
         # Keep the executor's paper/live flag in sync with system state
@@ -1214,7 +1237,7 @@ class TradingScheduler:
 
         try:
             # Score and rank
-            scored = self.aggregator.score(self._all_intents)
+            scored = self.aggregator.score(intents_snapshot)
 
             # Risk check
             approved = self.risk.check_batch(scored)
@@ -1320,22 +1343,22 @@ class TradingScheduler:
                             "paper": result.paper,
                         })
 
-            # Clear intents for next cycle
-            self._all_intents.clear()
+            # Intents already swapped out at the top — no clear needed.
         except Exception as e:
             logger.error(f"Aggregate/execute failed: {e}")
-            self._all_intents.clear()
 
     async def daily_reset(self) -> None:
         """Reset daily risk counters at midnight UTC."""
         self.risk.reset_daily()
         self.state.trades_today = 0
 
-        # Compute daily PnL entry
+        # Compute daily PnL as today's increment (not cumulative).
         from datetime import datetime, timezone
+        baseline = self.risk.state.daily_pnl_baseline or 0.0
+        today_pnl = self.state.realized_pnl - baseline
         self.state.daily_pnl.append({
             "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-            "pnl": self.state.realized_pnl,
+            "pnl": today_pnl,
         })
         self.state.daily_pnl = self.state.daily_pnl[-90:]  # keep 90 days
 

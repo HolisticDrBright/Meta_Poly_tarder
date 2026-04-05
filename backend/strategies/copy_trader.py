@@ -119,7 +119,7 @@ class CopyTrader(Strategy):
 
     async def evaluate(self, market_state: MarketState) -> Optional[OrderIntent]:
         """Check pending copy events for this market."""
-        for event in self._pending_events:
+        for event in list(self._pending_events):
             if event.market_id != market_state.market_id:
                 continue
 

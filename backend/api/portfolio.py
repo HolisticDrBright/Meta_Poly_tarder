@@ -266,7 +266,7 @@ async def place_manual_order(req: ManualOrderRequest):
     side = Side.YES if req.side.upper() == "YES" else Side.NO
 
     intent = OrderIntent(
-        strategy=StrategyName.ENTROPY,
+        strategy=StrategyName.MANUAL,
         market_id=req.market_id,
         condition_id=req.market_id,
         question=req.reason,

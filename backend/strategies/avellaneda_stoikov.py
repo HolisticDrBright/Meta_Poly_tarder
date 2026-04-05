@@ -175,7 +175,20 @@ class AvellanedaStoikovMM(Strategy):
             t_remaining=t_remaining,
             kappa=self.kappa,
         )
-        size_usdc = round(max(1.0, min(self.max_trade_usdc * 0.5, self.bankroll * 0.05)), 2)
+        # Use the A-S computed quote prices instead of raw market prices
+        if side == Side.YES:
+            limit_price = quotes.bid
+        else:
+            limit_price = quotes.ask
+        # Kelly-based sizing from edge between reservation price and market price
+        edge = abs(quotes.reservation_price - market_price)
+        from backend.quant.entropy import quarter_kelly
+        if edge > 0 and market_price > 0:
+            fair_p = max(0.01, min(0.99, quotes.reservation_price))
+            kelly_f = quarter_kelly(fair_p, market_price)
+            size_usdc = round(max(1.0, min(self.max_trade_usdc, abs(kelly_f) * self.bankroll)), 2)
+        else:
+            size_usdc = round(max(1.0, min(self.max_trade_usdc * 0.5, self.quote_size_usdc)), 2)
         captured_bps = (m.spread / 2.0) * 10000
         return OrderIntent(
             strategy=self.name,
@@ -184,7 +197,7 @@ class AvellanedaStoikovMM(Strategy):
             question=m.question,
             side=side,
             order_type=OrderType.LIMIT,
-            price=market_price,
+            price=limit_price,
             size_usdc=size_usdc,
             confidence=min(0.95, m.spread / 0.05),
             reason=(
