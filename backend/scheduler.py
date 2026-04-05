@@ -222,23 +222,66 @@ class TradingScheduler:
             entropy_bits=market_entropy(gm.yes_price),
         )
 
-    # Sports keywords — friend's trade data shows sports is the only net-
-    # losing category. Filter at the market-refresh level so no strategy
-    # even sees these markets.
+    # Sports & esports keywords — friend's trade data shows sports is the
+    # only net-losing category. Filter at the market-refresh level so no
+    # strategy even sees these markets. Includes team names because Gamma
+    # API often categorizes games generically and question text only has
+    # "TeamA vs. TeamB" with no sport keyword.
     _SPORTS_KEYWORDS = frozenset({
+        # Sport names
         "sports", "nfl", "nba", "mlb", "nhl", "soccer", "tennis",
         "football", "basketball", "baseball", "hockey", "ufc", "mma",
-        "boxing", "cricket", "f1", "formula 1", "nascar",
+        "boxing", "cricket", "f1", "formula 1", "nascar", "rugby",
+        "golf", "pga", "atp", "wta", "la liga", "premier league",
+        "serie a", "bundesliga", "champions league", "world cup",
+        # Esports
+        "esports", "counter-strike", "valorant", "dota", "league of legends",
+        "lol:", "overwatch", "call of duty", "fortnite", "rainbow six",
+        # MLB teams (the Marlins/Yankees gap)
+        "yankees", "marlins", "dodgers", "mets", "cubs", "red sox",
+        "braves", "astros", "phillies", "padres", "orioles", "guardians",
+        "rangers", "royals", "twins", "tigers", "white sox", "reds",
+        "brewers", "cardinals", "pirates", "nationals", "diamondbacks",
+        "rockies", "giants", "athletics", "rays", "blue jays", "mariners",
+        "angels",
+        # NBA teams
+        "lakers", "celtics", "warriors", "bucks", "nuggets", "76ers",
+        "sixers", "knicks", "nets", "heat", "bulls", "cavaliers",
+        "pacers", "hawks", "raptors", "spurs", "suns", "mavericks",
+        "clippers", "grizzlies", "pelicans", "wizards", "pistons",
+        "hornets", "timberwolves", "blazers", "kings", "thunder",
+        "rockets", "magic",
+        # NFL teams
+        "chiefs", "eagles", "49ers", "ravens", "cowboys", "bills",
+        "dolphins", "bengals", "lions", "vikings", "packers", "steelers",
+        "chargers", "seahawks", "broncos", "colts", "texans", "jaguars",
+        "titans", "saints", "falcons", "panthers", "buccaneers",
+        "patriots", "jets", "rams", "bears", "commanders", "cardinals",
+        # NHL teams
+        "bruins", "maple leafs", "canadiens", "penguins", "blackhawks",
+        "red wings", "flyers", "oilers", "avalanche", "lightning",
+        "hurricanes", "panthers", "predators", "kraken", "canucks",
+        "flames", "senators", "sabres", "blue jackets", "wild",
     })
 
     @classmethod
     def _is_sports_market(cls, gm) -> bool:
-        """True if a GammaMarket is a sports market that should be filtered."""
+        """True if a GammaMarket is a sports/esports market to filter."""
         cat = (gm.category or "").lower()
         q = (gm.question or "").lower()
         for kw in cls._SPORTS_KEYWORDS:
             if kw in cat or kw in q:
                 return True
+        # Also check raw tags from Gamma API if present
+        raw_tags = gm.raw.get("tags") or []
+        if isinstance(raw_tags, list):
+            for tag in raw_tags:
+                if isinstance(tag, dict):
+                    tag = tag.get("label", "")
+                tag_lower = str(tag).lower()
+                for kw in cls._SPORTS_KEYWORDS:
+                    if kw in tag_lower:
+                        return True
         return False
 
     async def refresh_markets(self) -> None:
