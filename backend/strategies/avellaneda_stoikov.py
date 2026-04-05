@@ -247,9 +247,14 @@ class AvellanedaStoikovMM(Strategy):
         """Update state after a fill.
 
         Called by the scheduler after a successful paper or live fill.
-        Updates the inventory used for reservation-price skew and
-        appends to the trade_buckets ring used by VPIN adverse-selection
-        detection.
+        Updates inventory used for reservation-price skew. Does NOT
+        populate trade_buckets from our own fills — VPIN measures
+        two-sided market flow (informed vs uninformed traders hitting
+        the book), and our own one-sided fills would produce a constant
+        VPIN = 1.0, which would trip the 0.70 adverse-selection guard
+        and permanently pause A-S after any fill. The VPIN guard
+        remains wired for future integration with a real CLOB trade
+        tape, but is inert until that data source is connected.
         """
         state = self._get_state(market_id)
         state.fills += 1
@@ -257,17 +262,6 @@ class AvellanedaStoikovMM(Strategy):
             state.inventory += size
         else:
             state.inventory -= size
-
-        # Record the trade for VPIN. TradeBucket stores signed
-        # buy/sell volume; buying YES = buy pressure, buying NO = sell
-        # pressure on the underlying YES token. Cap the ring at 200
-        # buckets so memory doesn't grow unbounded.
-        state.trade_buckets.append(TradeBucket(
-            buy_volume=size if side == Side.YES else 0.0,
-            sell_volume=size if side == Side.NO else 0.0,
-        ))
-        if len(state.trade_buckets) > 200:
-            state.trade_buckets = state.trade_buckets[-200:]
 
     def record_close(self, market_id: str, side: Side, size: float) -> None:
         """Reverse the inventory delta when a position is closed."""

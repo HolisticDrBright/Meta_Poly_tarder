@@ -939,6 +939,18 @@ class TradingScheduler:
         # the scheduler's trade path over to real CLOB orders.
         self.state._executor = self.executor
 
+        # Initialize the risk engine's daily-loss baseline from whatever
+        # cumulative P&L was persisted. Without this, the first risk
+        # check after startup would interpret all prior realized P&L as
+        # today's loss and could lock trading permanently on resumption
+        # from a drawn-down state.
+        try:
+            self.risk.state.daily_pnl_baseline = float(
+                getattr(self.state, "realized_pnl", 0) or 0
+            )
+        except Exception:
+            self.risk.state.daily_pnl_baseline = 0.0
+
         # Restore persisted state from previous run
         import asyncio
         try:
