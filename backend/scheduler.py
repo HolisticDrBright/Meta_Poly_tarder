@@ -1071,7 +1071,11 @@ class TradingScheduler:
             except Exception as e:
                 logger.debug(f"DuckDB P&L restore skipped: {e}")
 
-            # Restore positions
+            # Restore positions — append directly WITHOUT calling
+            # add_position() which would decrement balance a second time.
+            # The balance was already deducted when these positions were
+            # originally opened; the SQLite snapshot stores the post-
+            # deduction balance. Using add_position here would double-count.
             existing = self.sqlite.get_active_positions()
             for row in existing:
                 pos = Position(
@@ -1084,7 +1088,8 @@ class TradingScheduler:
                     current_price=row.get("current_price", row["entry_price"]),
                     strategy=StrategyName(row.get("strategy", "entropy")),
                 )
-                self.state.add_position(pos)
+                self.state.positions.append(pos)
+                self.state.total_exposure += pos.size_usdc
             if self.state.positions:
                 logger.info(f"Restored {len(self.state.positions)} positions")
 

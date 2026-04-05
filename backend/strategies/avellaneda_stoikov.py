@@ -175,11 +175,13 @@ class AvellanedaStoikovMM(Strategy):
             t_remaining=t_remaining,
             kappa=self.kappa,
         )
-        # Use the A-S computed quote prices instead of raw market prices
+        # Use the A-S computed quote prices instead of raw market prices.
+        # Clamp to [0.01, 0.99] — large t_remaining can push bid/ask
+        # outside the valid probability range.
         if side == Side.YES:
-            limit_price = quotes.bid
+            limit_price = max(0.01, min(0.99, quotes.bid))
         else:
-            limit_price = quotes.ask
+            limit_price = max(0.01, min(0.99, quotes.ask))
         # Kelly-based sizing from edge between reservation price and market price
         edge = abs(quotes.reservation_price - market_price)
         from backend.quant.entropy import quarter_kelly
