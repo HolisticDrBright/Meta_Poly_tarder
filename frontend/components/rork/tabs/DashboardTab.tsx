@@ -264,12 +264,17 @@ export default function DashboardTab() {
       </div>
 
       {/* Active Trades */}
+      <div className="flex justify-between items-center mt-1">
+        <span className="text-[11px] font-bold font-mono tracking-widest" style={{ color: Colors.textSecondary }}>ACTIVE TRADES</span>
+        <span className="text-[11px] font-mono" style={{ color: Colors.textTertiary }}>{activeTrades.length} positions</span>
+      </div>
+      {activeTrades.length === 0 && (
+        <div className="rounded-xl p-4 text-center" style={{ backgroundColor: Colors.card, border: `1px solid ${Colors.cardBorder}` }}>
+          <span className="text-[11px] font-mono" style={{ color: Colors.textTertiary }}>No open positions — bot is scanning for signals</span>
+        </div>
+      )}
       {activeTrades.length > 0 && (
         <>
-          <div className="flex justify-between items-center mt-1">
-            <span className="text-[11px] font-bold font-mono tracking-widest" style={{ color: Colors.textSecondary }}>ACTIVE TRADES</span>
-            <span className="text-[11px] font-mono" style={{ color: Colors.textTertiary }}>{activeTrades.length} positions</span>
-          </div>
           {activeTrades.map((t) => {
             const tColor = t.pnl >= 0 ? Colors.green : Colors.coral;
             const isUp = t.currentPrice >= t.entryPrice;
