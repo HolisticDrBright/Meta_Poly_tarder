@@ -518,6 +518,30 @@ class TradingScheduler:
                 f"brier={report.overall_brier:.4f}, "
                 f"optimization={'ON' if report.optimization_ready else 'OFF'}"
             )
+
+            # Closed-loop weight learning — this is what actually makes
+            # the system recalibrate. The learning pass queries graded
+            # outcomes per strategy, computes new weights via softmax
+            # over (hit_rate + neg_brier + avg_pnl), clamps evolution
+            # to 8% per cycle, and writes data/active_weights.json.
+            # The SignalAggregator, SpecialistOrchestrator, and
+            # EnsembleAI all read that file on every cycle — so the
+            # next aggregation actually uses the new weights.
+            try:
+                from backend.learning.weights import run_learning_pass
+                pass_result = run_learning_pass(self._decision_logger)
+                if pass_result.get("updated"):
+                    logger.info(
+                        f"Learning loop: closed-loop weights DEPLOYED — "
+                        f"{pass_result.get('reason')}"
+                    )
+                else:
+                    logger.debug(
+                        f"Learning loop: closed-loop weights NOT updated "
+                        f"({pass_result.get('reason')})"
+                    )
+            except Exception as e:
+                logger.warning(f"Learning loop closed-loop pass failed: {e}")
         except Exception as e:
             logger.error(f"Learning loop failed (non-fatal): {e}")
 

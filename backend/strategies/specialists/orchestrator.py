@@ -211,14 +211,30 @@ class SpecialistOrchestrator:
         return "\n".join(lines)
 
     def _assign_weights(self, bundle: SpecialistBundle) -> None:
-        """Assign fusion weights. Zero weight in shadow mode for MiroFish."""
+        """Assign fusion weights. Zero weight in shadow mode for MiroFish.
+
+        Reads the latest learned specialist weights from the learning
+        loop output (data/active_weights.json via learning.weights),
+        falling back to SPECIALIST_WEIGHTS_LIVE defaults for any
+        specialist the loop hasn't seen yet. This closes the loop on
+        the specialist fusion side.
+        """
+        try:
+            from backend.learning.weights import get_specialist_weights
+            learned = get_specialist_weights()
+        except Exception:
+            learned = dict(SPECIALIST_WEIGHTS_LIVE)
+
         mf_weight_cfg = settings.specialists.mirofish_weight
         for o in bundle.opinions:
             if o.specialist == "mirofish":
-                # Shadow mode → 0 weight regardless of config
-                o.weight = 0.0 if o.shadow else mf_weight_cfg
+                # Shadow mode → 0 weight regardless of config / learned weight
+                o.weight = 0.0 if o.shadow else learned.get("mirofish", mf_weight_cfg)
             else:
-                o.weight = SPECIALIST_WEIGHTS_LIVE.get(o.specialist, 0.0)
+                o.weight = learned.get(
+                    o.specialist,
+                    SPECIALIST_WEIGHTS_LIVE.get(o.specialist, 0.0),
+                )
             # Scale weight by confidence so low-confidence opinions contribute less
             o.weight *= max(0.1, o.confidence)
 

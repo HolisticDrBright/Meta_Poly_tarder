@@ -280,12 +280,21 @@ class EnsembleAI(Strategy):
         # market rather than fabricating a signal.
         debates = [r for r in [claude_result, gpt4_result] if r]
 
-        # Weighted average across outer models
+        # Weighted average across outer models. Pulls the latest
+        # LEARNED weights from the learning loop output so when the
+        # analyzer decides Claude is outperforming GPT-4o (or vice
+        # versa), the next ensemble fusion uses the updated balance.
+        try:
+            from backend.learning.weights import get_model_weights
+            active_model_weights = get_model_weights()
+        except Exception:
+            active_model_weights = self.WEIGHTS
+
         total_weight = 0.0
         weighted_sum = 0.0
         probs = []
         for d in debates:
-            w = self.WEIGHTS.get(d.model_source, 0.1)
+            w = active_model_weights.get(d.model_source, self.WEIGHTS.get(d.model_source, 0.1))
             weighted_sum += d.final_probability * w
             total_weight += w
             probs.append(d.final_probability)

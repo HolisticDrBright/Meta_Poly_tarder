@@ -84,19 +84,50 @@ class SignalAggregator:
         min_confluence_for_boost: int = 2,
         confluence_boost: float = 1.5,
     ) -> None:
+        self._explicit_weights = weights  # override — skips learned weights
         self.weights = weights or STRATEGY_WEIGHTS
         self.min_confluence = min_confluence_for_boost
         self.confluence_boost = confluence_boost
+
+    def _load_learned_weights(self) -> dict[StrategyName, float]:
+        """Pull the latest learned strategy weights from the learning loop.
+
+        Reads data/active_weights.json (mtime-cached) and converts the
+        string keys back to StrategyName enum values. Falls back to
+        STRATEGY_WEIGHTS for any strategy the loop hasn't seen yet.
+
+        Called at the start of every score() cycle so deploys from
+        run_learning_pass take effect on the next aggregation.
+        """
+        try:
+            from backend.learning.weights import get_strategy_weights
+            learned = get_strategy_weights()  # string keys like "entropy", "theta"
+            mapped: dict[StrategyName, float] = dict(STRATEGY_WEIGHTS)
+            for k, v in learned.items():
+                # Map the lowercase string back to the enum value
+                for sn in StrategyName:
+                    if sn.value == k:
+                        mapped[sn] = float(v)
+                        break
+            return mapped
+        except Exception:
+            return STRATEGY_WEIGHTS
 
     def score(self, intents: list[OrderIntent]) -> list[ScoredIntent]:
         """
         Score and rank all intents.
 
-        1. Group by market_id
-        2. Detect confluence (multiple strategies same direction)
-        3. Compute composite score per intent
-        4. Return sorted by priority then score
+        1. Refresh learned weights from the learning loop's output
+        2. Group by market_id
+        3. Detect confluence (multiple strategies same direction)
+        4. Compute composite score per intent
+        5. Return sorted by priority then score
         """
+        # Refresh learned weights unless caller explicitly overrode them.
+        # This is the hook that closes the learning loop on the aggregator
+        # side — every aggregation cycle uses the latest deployed weights.
+        if self._explicit_weights is None:
+            self.weights = self._load_learned_weights()
         # Group by market
         groups: dict[str, MarketSignalGroup] = defaultdict(
             lambda: MarketSignalGroup(market_id="", question="")
