@@ -95,21 +95,34 @@ async function safeJson<T>(url: string): Promise<T | null> {
   }
 }
 
-function fmtNumber(v: number | null | undefined, digits = 3): string {
-  if (v === null || v === undefined || Number.isNaN(v)) return "—";
-  return v.toFixed(digits);
+// Coerce ANY input (number, string, null, undefined, NaN, Infinity) to a
+// safe finite number or null. Prevents the whole tab from crashing when
+// the backend returns Decimals-as-strings or unexpected NaN/Infinity.
+function toSafeNum(v: any): number | null {
+  if (v === null || v === undefined) return null;
+  const n = typeof v === "number" ? v : Number(v);
+  if (!Number.isFinite(n)) return null;
+  return n;
 }
 
-function fmtPct(v: number | null | undefined, digits = 1): string {
-  if (v === null || v === undefined || Number.isNaN(v)) return "—";
-  return `${v.toFixed(digits)}%`;
+function fmtNumber(v: any, digits = 3): string {
+  const n = toSafeNum(v);
+  if (n === null) return "—";
+  return n.toFixed(digits);
 }
 
-function brierColor(brier: number | null | undefined): string {
-  if (brier === null || brier === undefined) return Colors.textTertiary;
+function fmtPct(v: any, digits = 1): string {
+  const n = toSafeNum(v);
+  if (n === null) return "—";
+  return `${n.toFixed(digits)}%`;
+}
+
+function brierColor(brier: any): string {
+  const n = toSafeNum(brier);
+  if (n === null) return Colors.textTertiary;
   // Lower is better. 0 = perfect, 0.25 = chance, >0.25 = worse than chance.
-  if (brier <= 0.15) return Colors.green;
-  if (brier <= 0.22) return Colors.amber;
+  if (n <= 0.15) return Colors.green;
+  if (n <= 0.22) return Colors.amber;
   return Colors.coral;
 }
 
@@ -189,19 +202,36 @@ export default function IntelligenceTab() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
       });
-      const d = await r.json();
+      // Parse defensively — if backend returns HTML (500), sanitise it
+      const raw = await r.text();
+      let d: any = {};
+      try {
+        d = JSON.parse(
+          raw
+            .replace(/:\s*Infinity/g, ": null")
+            .replace(/:\s*-Infinity/g, ": null")
+            .replace(/:\s*NaN/g, ": null")
+        );
+      } catch {
+        setMessage(`Server returned non-JSON (HTTP ${r.status})`);
+        return;
+      }
       if (d.status === "analysis complete") {
-        setMessage(
-          `Analysis complete — Brier ${d.overall_brier?.toFixed(4) ?? "—"} over ${d.scored_outcomes} outcomes`
-        );
+        const brier = fmtNumber(d.overall_brier, 4);
+        const scored = toSafeNum(d.scored_outcomes) ?? 0;
+        setMessage(`Analysis complete — Brier ${brier} over ${scored} outcomes`);
         await loadAll();
+      } else if (d.status === "error") {
+        setMessage(`Server error: ${d.error || "unknown"}`);
+      } else if (d.status === "not enough data") {
+        const scored = toSafeNum(d.scored_outcomes) ?? 0;
+        const minimum = toSafeNum(d.minimum) ?? 10;
+        setMessage(`Not enough data yet (${scored} / ${minimum} graded outcomes)`);
       } else {
-        setMessage(
-          `${d.status}${d.scored !== undefined ? ` (${d.scored} / ${d.minimum} outcomes)` : ""}`
-        );
+        setMessage(String(d.status || "Unknown response"));
       }
     } catch (e: any) {
-      setMessage(`Error: ${e?.message || "unknown"}`);
+      setMessage(`Request failed: ${e?.message || "unknown"}`);
     } finally {
       setTriggering(false);
     }
@@ -447,10 +477,10 @@ export default function IntelligenceTab() {
               <div className="col-span-3 text-right">Suggested</div>
             </div>
             {signalKeys.map((key) => {
-              const w = currentWeights[key] ?? 0;
-              const power = signalAttribution[key];
-              const rec = weightRecommendations[key];
-              const delta = rec !== undefined ? rec - w : 0;
+              const wNum = toSafeNum(currentWeights[key]) ?? 0;
+              const powerNum = toSafeNum(signalAttribution[key]);
+              const recNum = toSafeNum(weightRecommendations[key]);
+              const deltaNum = recNum !== null ? recNum - wNum : 0;
               return (
                 <div
                   key={key}
@@ -466,30 +496,30 @@ export default function IntelligenceTab() {
                     className="col-span-2 text-right font-bold"
                     style={{ color: Colors.textPrimary }}
                   >
-                    {w.toFixed(3)}
+                    {fmtNumber(wNum, 3)}
                   </div>
                   <div
                     className="col-span-3 text-right"
                     style={{
                       color:
-                        power === undefined
+                        powerNum === null
                           ? Colors.textTertiary
-                          : power > 0
+                          : powerNum > 0
                             ? Colors.green
-                            : power < 0
+                            : powerNum < 0
                               ? Colors.coral
                               : Colors.textTertiary,
                     }}
                   >
-                    {power === undefined ? "—" : power.toFixed(3)}
+                    {fmtNumber(powerNum, 3)}
                   </div>
                   <div
                     className="col-span-3 text-right"
-                    style={{ color: deltaColor(delta) }}
+                    style={{ color: deltaColor(deltaNum) }}
                   >
-                    {rec === undefined
+                    {recNum === null
                       ? "—"
-                      : `${rec.toFixed(3)} (${delta >= 0 ? "+" : ""}${delta.toFixed(3)})`}
+                      : `${fmtNumber(recNum, 3)} (${deltaNum >= 0 ? "+" : ""}${fmtNumber(deltaNum, 3)})`}
                   </div>
                 </div>
               );
@@ -526,8 +556,10 @@ export default function IntelligenceTab() {
         ) : (
           <div className="space-y-1.5">
             {calibration.buckets.map((b, i) => {
-              const predicted = b.bucket + 0.05; // center of 0.1-wide bucket
-              const actual = b.actual_freq;
+              // Coerce all numeric fields — backend may send Decimal-as-string
+              const bucket = toSafeNum(b.bucket) ?? 0;
+              const actual = toSafeNum(b.actual_freq) ?? 0;
+              const predicted = bucket + 0.05;
               const err = Math.abs(predicted - actual);
               const errColor =
                 err < 0.05
@@ -535,7 +567,7 @@ export default function IntelligenceTab() {
                   : err < 0.12
                     ? Colors.amber
                     : Colors.coral;
-              const barWidth = Math.min(100, actual * 100);
+              const barWidth = Math.min(100, Math.max(0, actual * 100));
               return (
                 <div key={i} className="flex items-center gap-2 text-[10px] font-mono">
                   <div
@@ -543,7 +575,7 @@ export default function IntelligenceTab() {
                     style={{ color: Colors.textTertiary }}
                   >
                     p=
-                    {b.bucket.toFixed(1)}-{(b.bucket + 0.1).toFixed(1)}
+                    {bucket.toFixed(1)}-{(bucket + 0.1).toFixed(1)}
                   </div>
                   <div
                     className="flex-1 h-3 rounded-sm relative"
@@ -740,18 +772,21 @@ export default function IntelligenceTab() {
                   </button>
                 </div>
                 <div className="space-y-1">
-                  {Object.entries(p.weight_deltas || {}).map(([k, d]) => (
-                    <div
-                      key={k}
-                      className="flex justify-between text-[10px] font-mono"
-                    >
-                      <span style={{ color: Colors.textPrimary }}>{k}</span>
-                      <span style={{ color: deltaColor(d) }}>
-                        {d >= 0 ? "+" : ""}
-                        {d.toFixed(3)}
-                      </span>
-                    </div>
-                  ))}
+                  {Object.entries(p.weight_deltas || {}).map(([k, d]) => {
+                    const dNum = toSafeNum(d) ?? 0;
+                    return (
+                      <div
+                        key={k}
+                        className="flex justify-between text-[10px] font-mono"
+                      >
+                        <span style={{ color: Colors.textPrimary }}>{k}</span>
+                        <span style={{ color: deltaColor(dNum) }}>
+                          {dNum >= 0 ? "+" : ""}
+                          {fmtNumber(dNum, 3)}
+                        </span>
+                      </div>
+                    );
+                  })}
                 </div>
                 {p.supporting_evidence && p.supporting_evidence.length > 0 && (
                   <div

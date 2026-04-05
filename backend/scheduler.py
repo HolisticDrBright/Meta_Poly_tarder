@@ -141,15 +141,23 @@ class TradingScheduler:
             openai_api_key=settings.ai.openai_api_key,
         )
 
-        # Prediction Intelligence — logs every decision + outcome so the
-        # retrospective analyzer can grade the bot and tune weights.
+        # Prediction Intelligence — shared orchestrator owns DecisionLogger,
+        # RetrospectiveAnalyzer, and WeightAdjuster. A single instance is
+        # shared with the /api/v1/intelligence endpoints via system_state
+        # so both sides use the SAME DuckDB connection to
+        # data/prediction_intelligence.db. Before this, scheduler and
+        # API each created their own DecisionLogger → two write
+        # connections on the same DuckDB file → lock conflict the
+        # moment you hit /analysis/trigger → "crashes the site".
         # Soft-imported so a broken PI install never takes the scheduler down.
+        self._pi_orchestrator = None
         self._decision_logger = None
         try:
-            from prediction_intelligence.logger import DecisionLogger
-            self._decision_logger = DecisionLogger()
+            from prediction_intelligence.orchestrator import LoopOrchestrator
+            self._pi_orchestrator = LoopOrchestrator()
+            self._decision_logger = self._pi_orchestrator.decision_logger
         except Exception as e:
-            logger.warning(f"Decision logger unavailable — learning loop off: {e}")
+            logger.warning(f"Intelligence orchestrator unavailable — learning loop off: {e}")
 
         # Specialist layer — attach decision logger so specialist opinions
         # also feed the learning loop for Brier scoring + weight tuning.
@@ -171,6 +179,12 @@ class TradingScheduler:
         from backend.state import system_state
         self.state = system_state
         self.state.paper_trading = settings.trading.paper_trading
+        # Expose the prediction_intelligence orchestrator via system_state
+        # so /api/v1/intelligence endpoints reuse the SAME DecisionLogger
+        # instance the scheduler uses. Without this, each side opens its
+        # own write connection to data/prediction_intelligence.db and
+        # the trigger endpoint crashes on the DuckDB lock.
+        self.state._pi_orchestrator = self._pi_orchestrator
         # Wire the real starting capital so the dashboard and ROI calculations
         # use $300 (or whatever STARTING_CAPITAL is set to) instead of the
         # legacy $10k default baked into state.py.
@@ -427,6 +441,85 @@ class TradingScheduler:
                     })
         except Exception as e:
             logger.error(f"Settlement watcher failed: {e}")
+
+    async def run_retrospective_analysis(self) -> None:
+        """Auto-run the learning loop analyzer every N minutes.
+
+        Trigger: ≥10 new scored outcomes since the last run, OR it's
+        been >6 hours since the last run (whichever comes first). This
+        means the analyzer only runs when there's enough fresh data to
+        be meaningful, and never runs more than once every few minutes.
+
+        Also auto-deploys weight proposals marked high-confidence
+        (scored ≥ 200 outcomes AND ≤3 weight changes). Lower-confidence
+        proposals are queued in data/weight_proposals/ for manual
+        approval via the Intelligence tab.
+
+        Never raises — all errors caught and logged.
+        """
+        if self._pi_orchestrator is None:
+            return
+        try:
+            orch = self._pi_orchestrator
+            scored = orch.decision_logger.get_scored_count()
+
+            # Bootstrap: track the count at first run
+            if not hasattr(self, "_pi_last_scored"):
+                self._pi_last_scored = 0
+            new_since_last = scored - self._pi_last_scored
+
+            if scored < 10:
+                logger.debug(
+                    f"Learning loop: {scored} scored outcomes (need 10 to start)"
+                )
+                return
+            if new_since_last < 10 and self._pi_last_scored > 0:
+                logger.debug(
+                    f"Learning loop: only {new_since_last} new outcomes since last run"
+                )
+                return
+
+            logger.info(
+                f"Learning loop: running analysis on {scored} outcomes "
+                f"(+{new_since_last} since last run)"
+            )
+            report = orch.analyzer.run_analysis()
+            self._pi_last_scored = scored
+
+            # Try to propose new weights (no-op if <50 outcomes)
+            try:
+                report_dict = {
+                    "scored_outcomes": report.scored_outcomes,
+                    "weight_recommendations": report.weight_recommendations,
+                    "overall_brier": report.overall_brier,
+                }
+                proposal = orch.adjuster.propose_weights(report_dict)
+                if proposal is not None:
+                    if proposal.auto_deploy:
+                        deployed = orch.adjuster.deploy_weights(proposal)
+                        if deployed:
+                            logger.info(
+                                f"Learning loop: AUTO-DEPLOYED weight proposal "
+                                f"{proposal.proposal_id[:8]} — "
+                                f"{len(proposal.weight_deltas)} changes"
+                            )
+                    else:
+                        logger.info(
+                            f"Learning loop: new proposal {proposal.proposal_id[:8]} "
+                            f"queued for manual review "
+                            f"(confidence={proposal.confidence_level}, "
+                            f"changes={len(proposal.weight_deltas)})"
+                        )
+            except Exception as e:
+                logger.warning(f"Learning loop proposal step failed: {e}")
+
+            logger.info(
+                f"Learning loop complete: report={report.report_id[:8]}, "
+                f"brier={report.overall_brier:.4f}, "
+                f"optimization={'ON' if report.optimization_ready else 'OFF'}"
+            )
+        except Exception as e:
+            logger.error(f"Learning loop failed (non-fatal): {e}")
 
     async def run_binance_arb(self) -> None:
         """Scan for Polymarket-vs-Binance crypto price gaps."""
@@ -863,19 +956,55 @@ class TradingScheduler:
         Log an opened position to the prediction_intelligence decision
         store. Returns the decision_id (or "" if logging is disabled).
         Never raises.
+
+        Populates market_theme, regime_label, and edge_classification
+        so the retrospective analyzer's per-group breakdowns have
+        real data to work with (previously they were all empty strings,
+        collapsing every decision into one uncategorized bucket).
         """
         if self._decision_logger is None:
             return ""
         try:
             from prediction_intelligence.logger import DecisionRecord
+            from backend.quant.regime import classify as classify_regime
+
+            # Look up the live MarketState so we can classify its regime + theme
+            market = next(
+                (m for m in self.state.markets if m.market_id == intent.market_id),
+                None,
+            )
+            regime_label = ""
+            market_theme = ""
+            if market is not None:
+                try:
+                    regime_label = classify_regime(market).regime.value
+                except Exception:
+                    pass
+                market_theme = (market.category or "")[:50]
+
+            # Edge classification buckets based on Kelly-sized fraction
+            edge_est = getattr(intent, "edge", 0.0) or 0.0
+            abs_edge = abs(edge_est)
+            if abs_edge >= 0.15:
+                edge_classification = "large"
+            elif abs_edge >= 0.05:
+                edge_classification = "medium"
+            elif abs_edge > 0:
+                edge_classification = "small"
+            else:
+                edge_classification = "unknown"
+
             record = DecisionRecord(
                 market_id=intent.market_id,
                 market_title=(intent.question or "")[:200],
+                market_theme=market_theme,
                 implied_probability=result.fill_price,
                 fair_probability=getattr(intent, "fair_probability", 0.5) or 0.5,
-                edge_estimate=getattr(intent, "edge", 0.0) or 0.0,
+                edge_estimate=edge_est,
                 opportunity_score=getattr(intent, "confidence", 0.0) or 0.0,
                 classification="LIVE" if not result.paper else "PAPER",
+                edge_classification=edge_classification,
+                regime_label=regime_label,
                 paper_position_size=result.fill_size,
                 paper_entry_price=result.fill_price,
                 risk_approved=True,
@@ -1182,17 +1311,23 @@ class TradingScheduler:
         )
 
         # Settlement watcher — closes positions at the REAL Gamma
-        # resolution price (1.0 or 0.0) when markets resolve. Without
-        # this, positions would just hold forever on unresolved markets
-        # until a take-profit / stop-loss / near-certain-with-pnl>0
-        # exit fires (and the RESOLUTION EXIT fallback now requires
-        # meaningful profit, so it no longer fires premature zero-pnl
-        # closes).
+        # resolution price (1.0 or 0.0) when markets resolve.
         self.scheduler.add_job(
             self.run_settlement_watcher,
             IntervalTrigger(seconds=60),
             id="settlement_watcher",
             name="Gamma settlement watcher",
+        )
+
+        # Retrospective analyzer — auto-runs the learning loop every
+        # 10 minutes. The function itself short-circuits unless there
+        # are ≥10 new scored outcomes since the last run, so this is
+        # cheap in practice.
+        self.scheduler.add_job(
+            self.run_retrospective_analysis,
+            IntervalTrigger(minutes=10),
+            id="retrospective_analysis",
+            name="Learning loop (retrospective analyzer)",
         )
 
         # Aggregation + execution
@@ -1236,7 +1371,8 @@ class TradingScheduler:
             f"Scheduled jobs: markets(45s), positions(15s), entropy(60s), "
             f"arb(15s), binance_arb(15s), MM(10s), theta(5m), jet(60s), "
             f"wallet(30s), leaderboard(5m), aggregate(30s), "
-            f"settlement_watcher(60s), persist(2m), daily(midnight)"
+            f"settlement_watcher(60s), pi_analysis(10m), "
+            f"persist(2m), daily(midnight)"
         )
 
     async def stop(self) -> None:

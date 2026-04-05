@@ -19,10 +19,49 @@ _orchestrator: Optional[LoopOrchestrator] = None
 
 
 def _get_orchestrator() -> LoopOrchestrator:
+    """Return the shared scheduler-owned orchestrator if available,
+    otherwise fall back to a local one.
+
+    Sharing is critical: scheduler and API must use the SAME
+    DecisionLogger instance so they share one DuckDB write connection
+    to data/prediction_intelligence.db. Two separate instances = two
+    write connections = lock conflict the moment /analysis/trigger
+    runs while the scheduler is logging a decision = crash.
+    """
     global _orchestrator
+    # First try the shared instance from system_state (set by scheduler)
+    try:
+        from backend.state import system_state
+        shared = getattr(system_state, "_pi_orchestrator", None)
+        if shared is not None:
+            return shared
+    except Exception:
+        pass
+    # Fall back to a local one (for standalone API use without scheduler)
     if _orchestrator is None:
         _orchestrator = LoopOrchestrator()
     return _orchestrator
+
+
+def _safe_report_fields(report_dict: Optional[dict]) -> dict:
+    """Sanitize a report dict so every field has a JSON-safe, frontend-friendly
+    value. The frontend IntelligenceTab crashes if it encounters NaN, Infinity,
+    or unexpected None in places it expects numbers.
+    """
+    if not isinstance(report_dict, dict):
+        return {}
+    import math as _math
+    def _clean(v):
+        if isinstance(v, float):
+            if _math.isnan(v) or _math.isinf(v):
+                return None
+            return v
+        if isinstance(v, dict):
+            return {k: _clean(val) for k, val in v.items()}
+        if isinstance(v, list):
+            return [_clean(x) for x in v]
+        return v
+    return _clean(report_dict)
 
 
 class DecisionInput(BaseModel):
@@ -105,122 +144,243 @@ async def backfill_outcomes():
 
 
 # ── Analysis ────────────────────────────────────────────────
+#
+# Every endpoint below is bulletproofed with try/except around the
+# orchestrator call + _safe_report_fields() sanitation. The goal is
+# that no matter what happens in the analyzer (DuckDB lock, empty
+# tables, NaN/Inf values, divide-by-zero), the endpoint returns a
+# well-formed JSON response with an "error" field, never a 500.
+# Before this the trigger endpoint would 500 when the scheduler held
+# the DuckDB lock, which crashed the Intelligence tab with a
+# "client-side exception" when it tried to parse an HTML error page
+# as JSON.
 
 @router.get("/analysis/latest")
 async def get_latest_analysis():
-    orch = _get_orchestrator()
-    report = orch.analyzer.get_latest_report()
-    if not report:
-        return {"status": "no analysis reports yet", "scored_outcomes": orch.decision_logger.get_scored_count()}
-    return report
+    try:
+        orch = _get_orchestrator()
+        report = orch.analyzer.get_latest_report()
+        if not report:
+            return {
+                "status": "no analysis reports yet",
+                "scored_outcomes": orch.decision_logger.get_scored_count(),
+                "total_decisions": orch.decision_logger.get_total_count(),
+            }
+        return _safe_report_fields(report)
+    except Exception as e:
+        logger.error(f"get_latest_analysis failed: {e}")
+        return {"status": "error", "error": str(e)[:200]}
 
 
 @router.get("/analysis/history")
 async def get_analysis_history():
-    orch = _get_orchestrator()
-    return {"reports": orch.analyzer.get_all_reports()}
+    try:
+        orch = _get_orchestrator()
+        reports = orch.analyzer.get_all_reports()
+        return {"reports": [_safe_report_fields(r) for r in reports]}
+    except Exception as e:
+        logger.error(f"get_analysis_history failed: {e}")
+        return {"reports": [], "error": str(e)[:200]}
 
 
 @router.post("/analysis/trigger")
 async def trigger_analysis():
-    orch = _get_orchestrator()
-    scored = orch.decision_logger.get_scored_count()
-    if scored < 10:
-        return {"status": "not enough data", "scored": scored, "minimum": 10}
-    report = orch.analyzer.run_analysis()
-    return {
-        "status": "analysis complete",
-        "report_id": report.report_id,
-        "overall_brier": report.overall_brier,
-        "scored_outcomes": report.scored_outcomes,
-        "optimization_ready": report.optimization_ready,
-    }
+    try:
+        orch = _get_orchestrator()
+        scored = orch.decision_logger.get_scored_count()
+        if scored < 10:
+            return {
+                "status": "not enough data",
+                "scored_outcomes": scored,
+                "minimum": 10,
+                "overall_brier": None,
+                "report_id": None,
+                "optimization_ready": False,
+            }
+        report = orch.analyzer.run_analysis()
+        # Try to auto-propose weights if optimization is ready
+        proposal_info = None
+        try:
+            report_dict = {
+                "scored_outcomes": report.scored_outcomes,
+                "weight_recommendations": report.weight_recommendations,
+                "overall_brier": report.overall_brier,
+            }
+            proposal = orch.adjuster.propose_weights(report_dict)
+            if proposal is not None:
+                proposal_info = {
+                    "proposal_id": proposal.proposal_id,
+                    "confidence": proposal.confidence_level,
+                    "auto_deploy": proposal.auto_deploy,
+                    "changes": len(proposal.weight_deltas),
+                }
+                if proposal.auto_deploy:
+                    orch.adjuster.deploy_weights(proposal)
+                    proposal_info["deployed"] = True
+        except Exception as e:
+            logger.warning(f"trigger proposal step failed: {e}")
+
+        import math as _math
+        brier = report.overall_brier
+        if isinstance(brier, float) and (_math.isnan(brier) or _math.isinf(brier)):
+            brier = None
+        return {
+            "status": "analysis complete",
+            "report_id": report.report_id,
+            "overall_brier": brier,
+            "scored_outcomes": report.scored_outcomes,
+            "total_decisions": report.total_decisions,
+            "optimization_ready": report.optimization_ready,
+            "proposal": proposal_info,
+        }
+    except Exception as e:
+        logger.error(f"trigger_analysis failed: {e}")
+        return {
+            "status": "error",
+            "error": str(e)[:200],
+            "scored_outcomes": 0,
+            "overall_brier": None,
+            "report_id": None,
+            "optimization_ready": False,
+        }
 
 
 # ── Calibration ─────────────────────────────────────────────
 
 @router.get("/calibration")
 async def get_calibration():
-    orch = _get_orchestrator()
-    report = orch.analyzer.get_latest_report()
-    if not report:
-        return {"status": "no data", "buckets": []}
-    return {"buckets": report.get("calibration_buckets", []), "overall_brier": report.get("overall_brier")}
+    try:
+        orch = _get_orchestrator()
+        report = orch.analyzer.get_latest_report()
+        if not report:
+            return {"status": "no data", "buckets": [], "overall_brier": None}
+        safe = _safe_report_fields(report)
+        return {
+            "buckets": safe.get("calibration_buckets", []) or [],
+            "overall_brier": safe.get("overall_brier"),
+        }
+    except Exception as e:
+        logger.error(f"get_calibration failed: {e}")
+        return {"buckets": [], "overall_brier": None, "error": str(e)[:200]}
 
 
 @router.get("/calibration/by-theme")
 async def calibration_by_theme():
-    orch = _get_orchestrator()
-    report = orch.analyzer.get_latest_report()
-    if not report:
-        return {"status": "no data"}
-    return {"themes": report.get("theme_performance", [])}
+    try:
+        orch = _get_orchestrator()
+        report = orch.analyzer.get_latest_report()
+        if not report:
+            return {"themes": []}
+        safe = _safe_report_fields(report)
+        return {"themes": safe.get("theme_performance", []) or []}
+    except Exception as e:
+        logger.error(f"calibration_by_theme failed: {e}")
+        return {"themes": [], "error": str(e)[:200]}
 
 
 @router.get("/calibration/by-regime")
 async def calibration_by_regime():
-    orch = _get_orchestrator()
-    report = orch.analyzer.get_latest_report()
-    if not report:
-        return {"status": "no data"}
-    return {"regimes": report.get("regime_performance", [])}
+    try:
+        orch = _get_orchestrator()
+        report = orch.analyzer.get_latest_report()
+        if not report:
+            return {"regimes": []}
+        safe = _safe_report_fields(report)
+        return {"regimes": safe.get("regime_performance", []) or []}
+    except Exception as e:
+        logger.error(f"calibration_by_regime failed: {e}")
+        return {"regimes": [], "error": str(e)[:200]}
 
 
 # ── Performance ─────────────────────────────────────────────
 
 @router.get("/performance/summary")
 async def performance_summary():
-    orch = _get_orchestrator()
-    scored = orch.decision_logger.get_scored_count()
-    total = orch.decision_logger.get_total_count()
-    report = orch.analyzer.get_latest_report()
-    return {
-        "total_decisions": total,
-        "scored_outcomes": scored,
-        "overall_brier": report.get("overall_brier") if report else None,
-        "optimization_active": scored >= 50,
-    }
+    try:
+        orch = _get_orchestrator()
+        scored = orch.decision_logger.get_scored_count()
+        total = orch.decision_logger.get_total_count()
+        report = orch.analyzer.get_latest_report()
+        brier = None
+        if report:
+            import math as _math
+            b = report.get("overall_brier")
+            if isinstance(b, (int, float)) and not _math.isnan(float(b)) and not _math.isinf(float(b)):
+                brier = float(b)
+        return {
+            "total_decisions": total,
+            "scored_outcomes": scored,
+            "overall_brier": brier,
+            "optimization_active": scored >= 50,
+        }
+    except Exception as e:
+        logger.error(f"performance_summary failed: {e}")
+        return {
+            "total_decisions": 0,
+            "scored_outcomes": 0,
+            "overall_brier": None,
+            "optimization_active": False,
+            "error": str(e)[:200],
+        }
 
 
 @router.get("/performance/errors")
 async def performance_errors():
-    orch = _get_orchestrator()
-    report = orch.analyzer.get_latest_report()
-    if not report:
-        return {"status": "no data"}
-    return {
-        "error_counts": report.get("error_counts", {}),
-        "top_errors": report.get("top_errors", []),
-    }
+    try:
+        orch = _get_orchestrator()
+        report = orch.analyzer.get_latest_report()
+        if not report:
+            return {"error_counts": {}, "top_errors": []}
+        safe = _safe_report_fields(report)
+        return {
+            "error_counts": safe.get("error_counts", {}) or {},
+            "top_errors": safe.get("top_errors", []) or [],
+        }
+    except Exception as e:
+        logger.error(f"performance_errors failed: {e}")
+        return {"error_counts": {}, "top_errors": [], "error": str(e)[:200]}
 
 
 @router.get("/performance/signals")
 async def performance_signals():
-    orch = _get_orchestrator()
-    report = orch.analyzer.get_latest_report()
-    if not report:
-        return {"status": "no data"}
-    return {
-        "signal_attribution": report.get("signal_attribution", {}),
-        "weight_recommendations": report.get("weight_recommendations", {}),
-    }
+    try:
+        orch = _get_orchestrator()
+        report = orch.analyzer.get_latest_report()
+        if not report:
+            return {"signal_attribution": {}, "weight_recommendations": {}}
+        safe = _safe_report_fields(report)
+        return {
+            "signal_attribution": safe.get("signal_attribution", {}) or {},
+            "weight_recommendations": safe.get("weight_recommendations", {}) or {},
+        }
+    except Exception as e:
+        logger.error(f"performance_signals failed: {e}")
+        return {"signal_attribution": {}, "weight_recommendations": {}, "error": str(e)[:200]}
 
 
 # ── Weight management ───────────────────────────────────────
 
 @router.get("/weights/current")
 async def current_weights():
-    orch = _get_orchestrator()
-    return {
-        "weights": orch.adjuster.get_active_weights(),
-        "thresholds": orch.adjuster.get_active_thresholds(),
-    }
+    try:
+        orch = _get_orchestrator()
+        return {
+            "weights": orch.adjuster.get_active_weights() or {},
+            "thresholds": orch.adjuster.get_active_thresholds() or {},
+        }
+    except Exception as e:
+        logger.error(f"current_weights failed: {e}")
+        return {"weights": {}, "thresholds": {}, "error": str(e)[:200]}
 
 
 @router.get("/weights/proposals")
 async def list_proposals():
-    orch = _get_orchestrator()
-    return {"proposals": orch.adjuster.get_proposals()}
+    try:
+        orch = _get_orchestrator()
+        return {"proposals": orch.adjuster.get_proposals() or []}
+    except Exception as e:
+        logger.error(f"list_proposals failed: {e}")
+        return {"proposals": [], "error": str(e)[:200]}
 
 
 @router.post("/weights/proposals/{proposal_id}/deploy")
