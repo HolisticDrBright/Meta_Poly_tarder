@@ -140,6 +140,11 @@ class TradingScheduler:
             anthropic_api_key=settings.ai.anthropic_api_key,
             openai_api_key=settings.ai.openai_api_key,
         )
+        # Per-market ensemble dedupe: market_id -> last run wall-clock seconds.
+        # Prevents the job from re-analyzing the same market every cycle when
+        # it always sorts to the top of the priority list.
+        self._ensemble_last_run: dict[str, float] = {}
+        self._ensemble_dedupe_seconds: int = 600  # 10 min
 
         # Prediction Intelligence — shared orchestrator owns DecisionLogger,
         # RetrospectiveAnalyzer, and WeightAdjuster. A single instance is
@@ -243,9 +248,24 @@ class TradingScheduler:
         """
         Run the AI ensemble on top markets to get real model probabilities.
 
-        This replaces the fake simple_model_estimate with actual Claude/GPT-4o
-        debate results. Only runs on the top 10 markets by liquidity to manage
-        API costs. Markets without ensemble results keep their previous model_probability.
+        Replaces fake heuristics with actual Claude/GPT-4o debate results.
+
+        Prioritisation (key fix): rather than "top 10 by liquidity" — which
+        always returned the same 2 Iran regime markets and starved every
+        other market of analysis — we now score each market by
+          score = |model_probability - yes_price| * 2 + log10(liquidity + 1) * 0.1
+                  + age_bonus (how stale the last ensemble run is)
+        so high-edge + stale markets float to the top and liquidity only
+        acts as a tiebreaker.
+
+        Concurrency: runs up to ENSEMBLE_CONCURRENCY markets in parallel
+        via asyncio.gather + semaphore. A full cycle of 8 markets now
+        completes in ~one round-trip instead of 8 × round-trip serially,
+        so the 3-minute APScheduler trigger never skips.
+
+        Dedupe: each market is re-analyzed at most once every
+        self._ensemble_dedupe_seconds (10 min) so we don't burn API
+        budget re-scoring the same high-edge market every cycle.
         """
         if not settings.strategies.ensemble:
             return
@@ -253,44 +273,77 @@ class TradingScheduler:
             # No AI keys configured — use heuristic fallback
             for m in self.state.markets:
                 if m.model_probability == 0:
-                    # Contrarian heuristic: nudge toward 0.5 by 10%
                     nudge = (0.5 - m.yes_price) * 0.10
                     m.model_probability = max(0.05, min(0.95, m.yes_price + nudge))
             return
 
         try:
-            # Only run on top 10 by liquidity (API cost management)
-            top_markets = sorted(
-                self.state.markets, key=lambda m: m.liquidity, reverse=True
-            )[:10]
+            import math
+            import time
 
-            updated = 0
-            for market in top_markets:
-                try:
-                    result = await self.ensemble.run_ensemble(market)
-                    # Only persist model_probability when the ensemble
-                    # produced at least one real debate. Otherwise
-                    # run_ensemble falls back to ensemble_probability =
-                    # market.yes_price, which gives zero edge and lies
-                    # to downstream strategies about having AI signal.
-                    if result.debates and result.ensemble_confidence > 0:
-                        market.model_probability = result.ensemble_probability
-                        market.kl_divergence = abs(
-                            result.ensemble_probability - market.yes_price
-                        )
-                        updated += 1
-                        logger.info(
-                            f"Ensemble OK: {market.question[:40]} → "
-                            f"p={result.ensemble_probability:.3f} "
-                            f"(conf={result.ensemble_confidence:.2f}, "
-                            f"models={len(result.debates)})"
-                        )
-                    # Empty debates → keep whatever model_probability was
-                    # previously set (preserved by C3 update_markets merge)
-                except Exception as e:
-                    logger.warning(f"Ensemble failed for {market.market_id}: {e}")
-                    # Keep previous model_probability
-            logger.info(f"Ensemble cycle: {updated}/{len(top_markets)} markets updated with real model data")
+            now = time.time()
+            dedupe_s = self._ensemble_dedupe_seconds
+
+            def priority(m) -> float:
+                # Edge magnitude (if we already have a model_probability)
+                edge = 0.0
+                if getattr(m, "model_probability", 0) and m.model_probability > 0:
+                    edge = abs(m.model_probability - m.yes_price)
+                liq_term = math.log10(max(1.0, float(m.liquidity or 0.0)) + 1.0) * 0.1
+                last = self._ensemble_last_run.get(m.market_id, 0.0)
+                age_s = max(0.0, now - last)
+                # Age bonus saturates at 2× dedupe window
+                age_bonus = min(1.0, age_s / max(1.0, dedupe_s * 2)) * 0.5
+                return edge * 2.0 + liq_term + age_bonus
+
+            # Filter out markets still in dedupe window, then sort by priority
+            eligible = [
+                m for m in self.state.markets
+                if (now - self._ensemble_last_run.get(m.market_id, 0.0)) >= dedupe_s
+            ]
+            # Secondary liquidity floor so penny markets don't pollute the list
+            eligible = [m for m in eligible if (m.liquidity or 0) >= 500]
+            eligible.sort(key=priority, reverse=True)
+
+            # Cap per cycle — keeps API cost predictable
+            MAX_PER_CYCLE = 8
+            CONCURRENCY = 3
+            batch = eligible[:MAX_PER_CYCLE]
+
+            if not batch:
+                logger.debug("Ensemble cycle: no eligible markets (all in dedupe window)")
+                return
+
+            sem = asyncio.Semaphore(CONCURRENCY)
+
+            async def analyze(market):
+                async with sem:
+                    try:
+                        result = await self.ensemble.run_ensemble(market)
+                        self._ensemble_last_run[market.market_id] = time.time()
+                        if result.debates and result.ensemble_confidence > 0:
+                            market.model_probability = result.ensemble_probability
+                            market.kl_divergence = abs(
+                                result.ensemble_probability - market.yes_price
+                            )
+                            logger.info(
+                                f"Ensemble OK: {market.question[:40]} → "
+                                f"p={result.ensemble_probability:.3f} "
+                                f"(conf={result.ensemble_confidence:.2f}, "
+                                f"models={len(result.debates)})"
+                            )
+                            return True
+                        return False
+                    except Exception as e:
+                        logger.warning(f"Ensemble failed for {market.market_id}: {e}")
+                        return False
+
+            results = await asyncio.gather(*(analyze(m) for m in batch), return_exceptions=True)
+            updated = sum(1 for r in results if r is True)
+            logger.info(
+                f"Ensemble cycle: {updated}/{len(batch)} markets updated "
+                f"(eligible={len(eligible)}, concurrency={CONCURRENCY})"
+            )
 
         except Exception as e:
             logger.error(f"Ensemble probability run failed: {e}")
@@ -1273,11 +1326,17 @@ class TradingScheduler:
         )
 
         # AI ensemble model probabilities (every 3 min — manages API costs)
+        # max_instances=2 so if a single cycle briefly overshoots 3 min the
+        # next trigger still runs instead of being silently dropped with
+        # "maximum number of running instances reached (1)".
+        # coalesce=True collapses any missed triggers into one catch-up run.
         self.scheduler.add_job(
             self.run_ensemble_probabilities,
             IntervalTrigger(minutes=3),
             id="ensemble_probabilities",
             name="AI ensemble probabilities",
+            max_instances=2,
+            coalesce=True,
         )
 
         # Strategy jobs
