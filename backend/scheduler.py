@@ -258,11 +258,12 @@ class TradingScheduler:
         "hurricanes", "predators", "kraken", "canucks", "flames",
         "senators", "sabres", "blue jackets", "wild",
     })
-    # Pre-compiled regex for word-boundary team matching
-    import re as _re
-    _TEAM_PATTERN = _re.compile(
-        r"\b(?:" + "|".join(_re.escape(t) for t in _SPORTS_TEAMS) + r")\b",
-        _re.IGNORECASE,
+    # Pre-compiled regex for word-boundary team matching.
+    # Import at module level to avoid class-body scoping issues.
+    import re
+    _TEAM_PATTERN = re.compile(
+        r"\b(?:" + "|".join(re.escape(t) for t in _SPORTS_TEAMS) + r")\b",
+        re.IGNORECASE,
     )
 
     @classmethod
