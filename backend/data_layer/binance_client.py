@@ -89,6 +89,10 @@ class BinanceClient:
     def __init__(self, cache_ttl_sec: float = 10.0) -> None:
         self.cache_ttl = cache_ttl_sec
         self._session: Optional[aiohttp.ClientSession] = None
+        # Flat cache keyed by symbol. Every request always fetches the
+        # full default symbol set (all known crypto pairs) so the cache
+        # stays consistent regardless of which subset any given caller
+        # asks for.
         self._cache: dict[str, BinanceTicker] = {}
         self._cache_fetched_at: float = 0.0
 
@@ -104,27 +108,51 @@ class BinanceClient:
             await self._session.close()
 
     async def get_all_tickers(self, symbols: Optional[list[str]] = None) -> dict[str, BinanceTicker]:
-        """Fetch 24h ticker data for a set of symbols. Cached for ttl sec.
+        """Fetch 24h ticker data for all default crypto symbols. Cached.
 
-        If symbols is None, fetches the default list from ASSET_TO_SYMBOL.
+        The `symbols` parameter is accepted for API compatibility but is
+        ignored for the actual fetch — we always fetch the full default
+        set so the cache is complete regardless of which caller asked
+        for which subset. The caller gets back a dict filtered to their
+        requested subset (or the full set if None).
+
+        This prevents a subtle bug where the first caller asking for
+        just BTCUSDT would cache only that, and the next caller asking
+        for [BTCUSDT, ETHUSDT] would get a stale cache missing ETH.
         """
         now = time.time()
-        if self._cache and (now - self._cache_fetched_at) < self.cache_ttl:
-            return self._cache
+        default_symbols = sorted(set(ASSET_TO_SYMBOL.values()))
 
-        wanted = symbols or list(set(ASSET_TO_SYMBOL.values()))
+        # If cache is fresh, serve from it (filtered to requested subset)
+        if self._cache and (now - self._cache_fetched_at) < self.cache_ttl:
+            if symbols is None:
+                return dict(self._cache)
+            return {s: self._cache[s] for s in symbols if s in self._cache}
+
         session = await self._get_session()
         proxy = get_proxy_url()
 
+        # Binance /api/v3/ticker/24hr requires `symbol=X` for one item
+        # and `symbols=["A","B"]` for multiple. Passing `symbols=["X"]`
+        # for a single item is documented to work but some deployments
+        # return 400. Always fetch the full set to sidestep this.
         tickers: dict[str, BinanceTicker] = {}
         try:
-            # Binance supports symbols=["BTCUSDT","ETHUSDT"] as a URL-encoded JSON array
             import json as _json
-            params = {"symbols": _json.dumps(wanted)}
+            if len(default_symbols) == 1:
+                params = {"symbol": default_symbols[0]}
+            else:
+                params = {"symbols": _json.dumps(default_symbols)}
             async with session.get(TICKER_24H_ENDPOINT, params=params, proxy=proxy) as resp:
                 if resp.status != 200:
-                    logger.warning(f"Binance ticker fetch HTTP {resp.status}")
-                    return self._cache
+                    body = await resp.text()
+                    logger.warning(
+                        f"Binance ticker fetch HTTP {resp.status}: {body[:200]}"
+                    )
+                    # Keep stale cache rather than dropping to empty
+                    if symbols is None:
+                        return dict(self._cache)
+                    return {s: self._cache[s] for s in symbols if s in self._cache}
                 data = await resp.json()
             if not isinstance(data, list):
                 data = [data]
@@ -142,11 +170,19 @@ class BinanceClient:
                     logger.debug(f"Skipping malformed ticker row: {e}")
         except Exception as e:
             logger.warning(f"Binance ticker fetch failed: {e}")
-            return self._cache
+            # Serve stale cache on network errors
+            if symbols is None:
+                return dict(self._cache)
+            return {s: self._cache[s] for s in symbols if s in self._cache}
 
         self._cache = tickers
         self._cache_fetched_at = now
-        return tickers
+        logger.info(f"Binance: fetched {len(tickers)} tickers")
+
+        # Return filtered to requested subset (or full)
+        if symbols is None:
+            return dict(tickers)
+        return {s: tickers[s] for s in symbols if s in tickers}
 
     async def get_price(self, symbol: str) -> Optional[float]:
         """Get just the current price for one symbol. Uses the cached batch."""

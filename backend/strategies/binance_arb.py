@@ -63,6 +63,17 @@ _PRICE_PATTERN = re.compile(
     r"(?P<unit>k|K|m|M|thousand|million)?"
 )
 
+# Words that, if they follow an asset name within a few characters,
+# indicate the market is about a DIFFERENT asset that happens to share
+# a prefix. "Bitcoin Cash" ≠ BTC; "Solana-based" ≠ SOL; "Ethereum
+# Classic" ≠ ETH. The parser must skip these to avoid using BTCUSDT
+# data to price a BCH market.
+_DISQUALIFYING_SUFFIXES = {
+    "cash", "sv", "classic", "gold", "2.0", "2", "pro", "plus",
+    "based", "ecosystem", "network-based", "layer", "bridge",
+    "fork", "atom", "core", "diamond", "private", "dark",
+}
+
 
 @dataclass
 class ParsedCryptoMarket:
@@ -72,13 +83,47 @@ class ParsedCryptoMarket:
     direction: str     # "above" or "below"
 
 
+def _asset_is_disqualified(question: str, asset_match_start: int, asset_match_end: int) -> bool:
+    """Check if the asset reference is followed by a disqualifying word.
+
+    Example: for 'Will Bitcoin Cash fork succeed?' the asset match is
+    at positions (5, 12) for 'Bitcoin'. The next word is 'Cash' which
+    is in _DISQUALIFYING_SUFFIXES → return True.
+    """
+    # Peek 20 chars after the asset match
+    tail = question[asset_match_end:asset_match_end + 20].lower().strip()
+    if not tail:
+        return False
+    # Extract the immediate next word (up to whitespace/punct)
+    import re as _re
+    next_word_match = _re.match(r"[\s\-:]*(\w+)", tail)
+    if not next_word_match:
+        return False
+    next_word = next_word_match.group(1).lower()
+    return next_word in _DISQUALIFYING_SUFFIXES
+
+
 def parse_crypto_market(question: str) -> Optional[ParsedCryptoMarket]:
-    """Extract crypto-price target info from a Polymarket question string."""
+    """Extract crypto-price target info from a Polymarket question string.
+
+    Returns None on:
+      - no asset/direction/target match
+      - disqualifying suffix right after the asset (e.g. "Bitcoin Cash")
+      - target that can't be parsed as a number
+    Additional sanity checks (target within a plausible range of current
+    spot) happen in the strategy code, not here — the parser only
+    extracts what the question literally says.
+    """
     if not question:
         return None
     m = _PRICE_PATTERN.search(question)
     if not m:
         return None
+
+    # Reject if the asset name is immediately followed by a disqualifier
+    if _asset_is_disqualified(question, m.start("asset"), m.end("asset")):
+        return None
+
     asset_raw = (m.group("asset") or "").lower().replace("  ", " ").strip()
     symbol = ASSET_TO_SYMBOL.get(asset_raw)
     if not symbol:
@@ -192,6 +237,25 @@ class BinanceArb(Strategy):
         self.max_trade_usdc = max_trade_usdc
         self._client = get_binance_client()
 
+    async def evaluate(self, market_state: MarketState) -> Optional[OrderIntent]:
+        """Single-market evaluate path.
+
+        Required by the Strategy ABC (backend.strategies.base.Strategy).
+        Scheduler uses evaluate_batch() for efficiency, but this must
+        exist or the class can't be instantiated. Delegates to
+        evaluate_batch on a one-element list.
+        """
+        results = await self.evaluate_batch([market_state])
+        return results[0] if results else None
+
+    # Max ratio between parsed target and current spot. If ratio is
+    # outside this band the parse is almost certainly wrong (e.g. parser
+    # pulled "$50" out of a BTC question where the real target should
+    # have been "$50k" or similar). Rejecting keeps us from pricing real
+    # BTC against a $50 target and concluding the market is 99.99% YES.
+    _TARGET_SPOT_RATIO_MIN = 0.05   # target at least 5% of spot
+    _TARGET_SPOT_RATIO_MAX = 20.0   # target at most 20× spot
+
     async def evaluate_batch(self, markets: list[MarketState]) -> list[OrderIntent]:
         """Scan all markets for crypto-price arbs in one pass."""
         # Pre-parse every market so we can fetch Binance tickers only
@@ -202,8 +266,12 @@ class BinanceArb(Strategy):
                 continue
             if m.yes_price < 0.02 or m.yes_price > 0.98:
                 continue
-            if m.hours_to_close <= 0 or m.hours_to_close > 24 * 90:
-                continue  # skip expired or >90 days (tails too fat)
+            # Tighter horizon: 30 days max. The 24h-range Parkinson vol
+            # estimator gets very noisy when extrapolated to longer
+            # windows. For multi-month horizons we'd need historical
+            # klines with a proper vol fit — skip for now.
+            if m.hours_to_close <= 0 or m.hours_to_close > 24 * 30:
+                continue
             parsed = parse_crypto_market(m.question)
             if parsed is None:
                 continue
@@ -222,6 +290,7 @@ class BinanceArb(Strategy):
 
         intents: list[OrderIntent] = []
         rej_no_ticker = 0
+        rej_bad_target = 0
         rej_no_fair = 0
         rej_edge = 0
         rej_regime = 0
@@ -232,6 +301,21 @@ class BinanceArb(Strategy):
             if ticker is None:
                 rej_no_ticker += 1
                 continue
+
+            # Sanity-check parsed target against current spot. If target
+            # is outside [5%, 2000%] of spot, the parser most likely
+            # misread the question (wrong unit, wrong asset, or the
+            # question is about something else entirely).
+            if ticker.price > 0:
+                ratio = parsed.target_price / ticker.price
+                if ratio < self._TARGET_SPOT_RATIO_MIN or ratio > self._TARGET_SPOT_RATIO_MAX:
+                    logger.debug(
+                        f"Binance arb: rejected implausible target for "
+                        f"{parsed.asset}={parsed.target_price:,.2f} vs "
+                        f"spot={ticker.price:,.2f} (ratio={ratio:.3f})"
+                    )
+                    rej_bad_target += 1
+                    continue
 
             fair = fair_probability(
                 ticker=ticker,
@@ -307,8 +391,9 @@ class BinanceArb(Strategy):
             intents.append(intent)
 
         logger.info(
-            f"Binance arb cycle: {len(candidates)} crypto markets → "
-            f"{len(intents)} intents (rej: no_ticker={rej_no_ticker} "
+            f"Binance arb cycle: {len(markets)} markets → "
+            f"{len(candidates)} crypto candidates → {len(intents)} intents "
+            f"(rej: no_ticker={rej_no_ticker} bad_target={rej_bad_target} "
             f"no_fair={rej_no_fair} edge={rej_edge} regime={rej_regime} ev={rej_ev})"
         )
         return intents
