@@ -1227,14 +1227,16 @@ class TradingScheduler:
             f"entropy={settings.strategies.entropy}, "
             f"avellaneda={settings.strategies.avellaneda}, "
             f"arb={settings.strategies.arb}, "
+            f"binance_arb={getattr(settings.strategies, 'binance_arb', True)}, "
             f"theta={settings.strategies.theta}, "
             f"jet={settings.strategies.jet}, "
             f"copy={settings.strategies.copy}"
         )
         logger.info(
             f"Scheduled jobs: markets(45s), positions(15s), entropy(60s), "
-            f"arb(15s), MM(10s), theta(5m), jet(60s), wallet(30s), "
-            f"leaderboard(5m), aggregate(30s), persist(2m), daily(midnight)"
+            f"arb(15s), binance_arb(15s), MM(10s), theta(5m), jet(60s), "
+            f"wallet(30s), leaderboard(5m), aggregate(30s), "
+            f"settlement_watcher(60s), persist(2m), daily(midnight)"
         )
 
     async def stop(self) -> None:
