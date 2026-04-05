@@ -1358,12 +1358,21 @@ class TradingScheduler:
             id="binance_arb",
             name="Binance crypto arb",
         )
-        self.scheduler.add_job(
-            self.run_avellaneda_mm,
-            IntervalTrigger(seconds=10),
-            id="avellaneda_mm",
-            name="A-S market maker",
-        )
+        # A-S market maker is off by default — your friend's production data
+        # and our own trade log (34 opens / 27 closes averaging ~$0.10 per
+        # round trip) both confirm it's a money-losing / breakeven churn
+        # strategy on Polymarket's current spreads. Only schedule when
+        # explicitly enabled via STRATEGY_AVELLANEDA=true.
+        if settings.strategies.avellaneda:
+            self.scheduler.add_job(
+                self.run_avellaneda_mm,
+                IntervalTrigger(seconds=10),
+                id="avellaneda_mm",
+                name="A-S market maker",
+            )
+            logger.info("A-S market maker ENABLED via STRATEGY_AVELLANEDA=true")
+        else:
+            logger.info("A-S market maker DISABLED (STRATEGY_AVELLANEDA=false)")
         self.scheduler.add_job(
             self.run_theta_harvester,
             IntervalTrigger(minutes=5),
@@ -1450,9 +1459,10 @@ class TradingScheduler:
             f"jet={settings.strategies.jet}, "
             f"copy={settings.strategies.copy}"
         )
+        mm_label = "MM(10s)" if settings.strategies.avellaneda else "MM(OFF)"
         logger.info(
             f"Scheduled jobs: markets(45s), positions(15s), entropy(60s), "
-            f"arb(15s), binance_arb(15s), MM(10s), theta(5m), jet(60s), "
+            f"arb(15s), binance_arb(15s), {mm_label}, theta(5m), jet(60s), "
             f"wallet(30s), leaderboard(5m), aggregate(30s), "
             f"settlement_watcher(60s), pi_analysis(10m), "
             f"persist(2m), daily(midnight)"
