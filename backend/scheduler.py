@@ -243,21 +243,33 @@ class TradingScheduler:
                 self.state.markets, key=lambda m: m.liquidity, reverse=True
             )[:10]
 
+            updated = 0
             for market in top_markets:
                 try:
                     result = await self.ensemble.run_ensemble(market)
-                    market.model_probability = result.ensemble_probability
-                    market.kl_divergence = abs(
-                        result.ensemble_probability - market.yes_price
-                    )
-                    logger.debug(
-                        f"Ensemble: {market.question[:40]} → "
-                        f"p={result.ensemble_probability:.3f} "
-                        f"(conf={result.ensemble_confidence:.2f})"
-                    )
+                    # Only persist model_probability when the ensemble
+                    # produced at least one real debate. Otherwise
+                    # run_ensemble falls back to ensemble_probability =
+                    # market.yes_price, which gives zero edge and lies
+                    # to downstream strategies about having AI signal.
+                    if result.debates and result.ensemble_confidence > 0:
+                        market.model_probability = result.ensemble_probability
+                        market.kl_divergence = abs(
+                            result.ensemble_probability - market.yes_price
+                        )
+                        updated += 1
+                        logger.info(
+                            f"Ensemble OK: {market.question[:40]} → "
+                            f"p={result.ensemble_probability:.3f} "
+                            f"(conf={result.ensemble_confidence:.2f}, "
+                            f"models={len(result.debates)})"
+                        )
+                    # Empty debates → keep whatever model_probability was
+                    # previously set (preserved by C3 update_markets merge)
                 except Exception as e:
                     logger.warning(f"Ensemble failed for {market.market_id}: {e}")
                     # Keep previous model_probability
+            logger.info(f"Ensemble cycle: {updated}/{len(top_markets)} markets updated with real model data")
 
         except Exception as e:
             logger.error(f"Ensemble probability run failed: {e}")

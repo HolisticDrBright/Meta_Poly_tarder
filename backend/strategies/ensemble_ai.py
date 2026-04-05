@@ -146,6 +146,15 @@ class EnsembleAI(Strategy):
             f"WHALE POSITIONS: {whale_positions}\n"
         )
 
+    # Class-level circuit breaker for GPT-4o. Once the OpenAI account hits
+    # insufficient_quota, retrying on every market of every cycle wastes
+    # ~15-20 seconds per call and spams the log. After N consecutive 429s,
+    # disable GPT-4o for the rest of the process lifetime. User can top up
+    # their OpenAI account and restart to re-enable.
+    _gpt4_disabled: bool = False
+    _gpt4_429_count: int = 0
+    _gpt4_429_threshold: int = 3
+
     async def _call_claude(self, prompt: str) -> Optional[DebateResult]:
         """Call Claude API for debate."""
         if not self.anthropic_key:
@@ -155,37 +164,40 @@ class EnsembleAI(Strategy):
 
             client = anthropic.AsyncAnthropic(api_key=self.anthropic_key)
             response = await client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model="claude-sonnet-4-5",
                 max_tokens=2000,
                 system=DEBATE_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": prompt}],
             )
-            text = response.content[0].text
-            # Handle both JSON and mixed-content responses
+            text = ""
+            for block in (response.content or []):
+                if getattr(block, "type", "") == "text":
+                    text = getattr(block, "text", "") or text
             try:
                 data = json.loads(text)
             except json.JSONDecodeError:
-                # Try extracting JSON from markdown code blocks
-                import re
-                match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-                if match:
-                    data = json.loads(match.group(1))
-                else:
-                    # Last resort: try to find raw JSON object
-                    brace_start = text.find("{")
-                    if brace_start >= 0:
-                        data = json.loads(text[brace_start:])
-                    else:
-                        logger.warning("Claude response was not JSON")
-                        return None
-            return DebateResult.from_json(data, "claude")
+                import re as _re
+                match = _re.search(r"\{.*\}", text, _re.DOTALL)
+                if not match:
+                    logger.error(f"Claude returned non-JSON: {text[:200]}")
+                    return None
+                data = json.loads(match.group())
+            result = DebateResult.from_json(data, "claude")
+            logger.info(
+                f"Claude OK: p={result.final_probability:.3f} "
+                f"conf={result.confidence} {result.recommended_action}"
+            )
+            return result
         except Exception as e:
             logger.error(f"Claude debate failed: {e}")
             return None
 
     async def _call_gpt4(self, prompt: str) -> Optional[DebateResult]:
-        """Call GPT-4o API for debate."""
+        """Call GPT-4o API for debate with per-process quota circuit breaker."""
         if not self.openai_key:
+            return None
+        if EnsembleAI._gpt4_disabled:
+            # Circuit breaker tripped earlier — don't even try.
             return None
         try:
             import openai
@@ -200,11 +212,28 @@ class EnsembleAI(Strategy):
                 max_tokens=2000,
                 response_format={"type": "json_object"},
             )
+            # Success — reset the 429 counter
+            EnsembleAI._gpt4_429_count = 0
             text = response.choices[0].message.content
             data = json.loads(text)
             return DebateResult.from_json(data, "gpt4")
         except Exception as e:
-            logger.error(f"GPT-4o debate failed: {e}")
+            err_str = str(e)
+            is_quota = "429" in err_str or "insufficient_quota" in err_str or "quota" in err_str.lower()
+            if is_quota:
+                EnsembleAI._gpt4_429_count += 1
+                if EnsembleAI._gpt4_429_count >= EnsembleAI._gpt4_429_threshold:
+                    EnsembleAI._gpt4_disabled = True
+                    logger.error(
+                        f"GPT-4o DISABLED for this process — "
+                        f"{EnsembleAI._gpt4_429_count} consecutive 429 quota errors. "
+                        f"Top up your OpenAI account at "
+                        f"platform.openai.com/account/billing and restart backend."
+                    )
+                else:
+                    logger.error(f"GPT-4o 429 quota error ({EnsembleAI._gpt4_429_count}/{EnsembleAI._gpt4_429_threshold})")
+            else:
+                logger.error(f"GPT-4o debate failed: {e}")
             return None
 
     async def run_ensemble(
