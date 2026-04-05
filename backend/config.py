@@ -67,12 +67,15 @@ class SpecialistConfig:
 @dataclass(frozen=True)
 class StrategyFlags:
     entropy: bool = _bool(os.getenv("STRATEGY_ENTROPY"), True)
-    # Avellaneda-Stoikov is DISABLED by default. A production bot running
-    # the same strategy on Polymarket confirmed it's unprofitable on this
-    # venue — Polymarket's 1-2% spreads can't cover the 2% fee on winnings
-    # plus slippage plus adverse selection. Re-enable with
-    # STRATEGY_AVELLANEDA=true if/when Polymarket spreads widen.
-    avellaneda: bool = _bool(os.getenv("STRATEGY_AVELLANEDA"), False)
+    # Avellaneda-Stoikov MM: ENABLED by default. An earlier comment here
+    # said "unprofitable" based on 48 paper trades that netted ~$0.10 per
+    # round trip. The friend running a live production bot with the same
+    # strategy has 434 trades and +$331 P&L — the paper trader simulates
+    # fills at mid-price so A-S looks breakeven, but in live it captures
+    # real bid/ask spread and is the single largest profit source. The
+    # learning loop must not starve it below its base weight (enforced
+    # via per-strategy floor in backend/learning/weights.py).
+    avellaneda: bool = _bool(os.getenv("STRATEGY_AVELLANEDA"), True)
     arb: bool = _bool(os.getenv("STRATEGY_ARB"), True)
     # Binance-vs-Polymarket crypto price arb — new primary profit engine
     # since A-S is disabled. Zero AI cost, pure quant, runs every 15s.
@@ -115,7 +118,10 @@ class RiskConfig:
     # Polymarket: $4/trade, ~4% per market cap. Small sizes get filled
     # at the quoted price; large sizes walk the book and eat the edge
     # in slippage. $300 bankroll × 4% = $12 max per market = 3 trades.
-    max_portfolio_exposure: float = _float(os.getenv("MAX_PORTFOLIO_EXPOSURE"), 0.80)
+    # Exposure cap lowered from 0.80 → 0.65 — friend's bot hit gridlock
+    # at 82% exposure with no cash left for high-conviction opportunities.
+    # 65% keeps ~35% cash available for new signals.
+    max_portfolio_exposure: float = _float(os.getenv("MAX_PORTFOLIO_EXPOSURE"), 0.65)
     max_single_market_pct: float = _float(os.getenv("MAX_SINGLE_MARKET_PCT"), 0.04)
     max_daily_loss_pct: float = _float(os.getenv("MAX_DAILY_LOSS_PCT"), 0.10)
     max_trade_size_usdc: float = _float(os.getenv("MAX_TRADE_SIZE_USDC"), 4)

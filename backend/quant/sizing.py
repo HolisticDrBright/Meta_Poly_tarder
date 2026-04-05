@@ -44,10 +44,12 @@ from backend.strategies.base import StrategyName
 # EV gate reject almost every Polymarket opportunity.
 POLYMARKET_WINNINGS_FEE = 0.02
 
-# Assumed slippage beyond the visible best-bid/ask on paper fills.
-# Real CLOB slippage is observed empirically from the trade log once
-# the learning loop has enough outcomes.
-DEFAULT_EXPECTED_SLIPPAGE = 0.003
+# Assumed slippage beyond the visible best-bid/ask. Raised from 0.003
+# to 0.01 based on friend's live production data: giving up 1 cent per
+# share for much faster fills is worth it when positions average $0.68
+# profit. This also budgets more room for the exit leg so limit sells
+# cross the book instead of sitting unfilled.
+DEFAULT_EXPECTED_SLIPPAGE = 0.01
 
 
 # ── 1. EV gate for directional strategies ──────────────────

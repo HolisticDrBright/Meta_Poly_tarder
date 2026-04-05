@@ -222,13 +222,37 @@ class TradingScheduler:
             entropy_bits=market_entropy(gm.yes_price),
         )
 
+    # Sports keywords — friend's trade data shows sports is the only net-
+    # losing category. Filter at the market-refresh level so no strategy
+    # even sees these markets.
+    _SPORTS_KEYWORDS = frozenset({
+        "sports", "nfl", "nba", "mlb", "nhl", "soccer", "tennis",
+        "football", "basketball", "baseball", "hockey", "ufc", "mma",
+        "boxing", "cricket", "f1", "formula 1", "nascar",
+    })
+
+    @classmethod
+    def _is_sports_market(cls, gm) -> bool:
+        """True if a GammaMarket is a sports market that should be filtered."""
+        cat = (gm.category or "").lower()
+        q = (gm.question or "").lower()
+        for kw in cls._SPORTS_KEYWORDS:
+            if kw in cat or kw in q:
+                return True
+        return False
+
     async def refresh_markets(self) -> None:
         """Fetch latest market data from Gamma API."""
         try:
             gamma_markets = await self.gamma.get_active_markets(min_liquidity=10000, limit=100)
+            # Sports filter — these are the only net-losing category
+            pre_filter = len(gamma_markets)
+            gamma_markets = [gm for gm in gamma_markets if not self._is_sports_market(gm)]
+            n_sports = pre_filter - len(gamma_markets)
             markets = [self._gamma_to_market_state(gm) for gm in gamma_markets]
             self.state.update_markets(markets)
-            logger.info(f"Refreshed {len(markets)} markets from Gamma API")
+            sports_note = f" ({n_sports} sports filtered)" if n_sports else ""
+            logger.info(f"Refreshed {len(markets)} markets from Gamma API{sports_note}")
         except Exception as e:
             logger.error(f"Market refresh failed: {e}")
             return  # Don't try to broadcast if refresh failed

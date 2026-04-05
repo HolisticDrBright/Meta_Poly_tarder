@@ -39,6 +39,16 @@ MAX_CHANGE_PER_CYCLE = 0.08
 MIN_WEIGHT = 0.02
 MAX_WEIGHT = 0.50
 
+# Per-strategy minimum weights that override the global MIN_WEIGHT.
+# Purpose: the learning loop scores by brier + hit rate + avg pnl,
+# but Avellaneda has a low hit rate (~38%) yet massive total PnL
+# because wins are much larger than losses. The loop's hit-rate term
+# crushes its weight, which is exactly backwards. A floor at 0.15
+# prevents the loop from starving A-S below useful base sizing.
+STRATEGY_MIN_WEIGHTS: dict[str, float] = {
+    "avellaneda": 0.15,
+}
+
 
 # ── Defaults — used until the loop has enough data to learn ────────
 
@@ -50,7 +60,7 @@ DEFAULT_STRATEGY_WEIGHTS: dict[str, float] = {
     "theta": 0.10,
     "jet": 0.05,
     "copy": 0.05,
-    "avellaneda": 0.05,
+    "avellaneda": 0.15,
 }
 
 DEFAULT_SPECIALIST_WEIGHTS: dict[str, float] = {
@@ -197,7 +207,8 @@ def _clamp_evolution(
         tgt = new.get(k, cur)
         delta = tgt - cur
         capped = max(-max_change, min(max_change, delta))
-        result[k] = max(MIN_WEIGHT, min(MAX_WEIGHT, cur + capped))
+        floor = STRATEGY_MIN_WEIGHTS.get(k, MIN_WEIGHT)
+        result[k] = max(floor, min(MAX_WEIGHT, cur + capped))
     # Re-normalize to sum to 1
     total = sum(result.values())
     if total > 0:
