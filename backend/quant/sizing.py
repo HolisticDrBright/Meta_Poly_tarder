@@ -44,12 +44,12 @@ from backend.strategies.base import StrategyName
 # EV gate reject almost every Polymarket opportunity.
 POLYMARKET_WINNINGS_FEE = 0.02
 
-# Assumed slippage beyond the visible best-bid/ask. Raised from 0.003
-# to 0.01 based on friend's live production data: giving up 1 cent per
-# share for much faster fills is worth it when positions average $0.68
-# profit. This also budgets more room for the exit leg so limit sells
-# cross the book instead of sitting unfilled.
-DEFAULT_EXPECTED_SLIPPAGE = 0.01
+# Assumed slippage beyond the visible best-bid/ask on paper fills.
+# Kept at 0.003 for the EV gate (entry decisions). The friend's
+# "bid-0.01" recommendation was about EXIT sell pricing for live
+# orders, not the entry EV gate. Raising this too high starves A-S
+# of all opportunities (14/14 markets rejected by EV gate).
+DEFAULT_EXPECTED_SLIPPAGE = 0.003
 
 
 # ── 1. EV gate for directional strategies ──────────────────
