@@ -33,6 +33,7 @@ from backend.strategies.base import MarketState, OrderIntent, Position, Side, St
 from backend.strategies.entropy_screener import EntropyScreener
 from backend.strategies.avellaneda_stoikov import AvellanedaStoikovMM
 from backend.strategies.arb_scanner import ArbScanner
+from backend.strategies.binance_arb import BinanceArb
 from backend.strategies.theta_harvester import ThetaHarvester
 from backend.strategies.copy_trader import CopyTrader, CopyTarget, CopyTradeEvent
 from backend.strategies.jet_signal import JetSignalStrategy
@@ -84,6 +85,12 @@ class TradingScheduler:
             max_trade_usdc=_max_trade,
         )
         self.arb = ArbScanner(min_arb_edge=settings.quant.min_arb_edge)
+        self.binance_arb = BinanceArb(
+            min_liquidity=2000,
+            bankroll=_bankroll,
+            kelly_fraction_mult=_kelly_mult,
+            max_trade_usdc=_max_trade,
+        )
         self.theta = ThetaHarvester(
             bankroll=_bankroll,
             kelly_fraction_mult=_kelly_mult,
@@ -323,6 +330,27 @@ class TradingScheduler:
             self._all_intents.extend(intents)
         except Exception as e:
             logger.error(f"A-S MM failed: {e}")
+
+    async def run_binance_arb(self) -> None:
+        """Scan for Polymarket-vs-Binance crypto price gaps."""
+        if not getattr(settings.strategies, "binance_arb", True) or not self.state.markets:
+            return
+        try:
+            intents = await self.binance_arb.evaluate_batch(self.state.markets)
+            self._all_intents.extend(intents)
+            for intent in intents:
+                self.state.add_signal(intent)
+            if intents:
+                logger.info(f"Binance arb: {len(intents)} opportunities")
+                for intent in intents[:3]:
+                    await self.state.broadcast("signal", {
+                        "strategy": "binance_arb",
+                        "market_id": intent.market_id,
+                        "side": intent.side.value,
+                        "confidence": intent.confidence,
+                    })
+        except Exception as e:
+            logger.error(f"Binance arb failed: {e}")
 
     async def run_theta_harvester(self) -> None:
         """Run theta decay harvester."""
@@ -1014,6 +1042,12 @@ class TradingScheduler:
             IntervalTrigger(seconds=15),
             id="arb_scanner",
             name="Arb scanner",
+        )
+        self.scheduler.add_job(
+            self.run_binance_arb,
+            IntervalTrigger(seconds=15),
+            id="binance_arb",
+            name="Binance crypto arb",
         )
         self.scheduler.add_job(
             self.run_avellaneda_mm,

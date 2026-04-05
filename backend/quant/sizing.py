@@ -187,35 +187,38 @@ def kelly_size_usdc(
 # performance reports once enough outcomes accumulate.
 REGIME_STRATEGY_POLICY: dict[Regime, set[StrategyName]] = {
     # Information-driven: real volume, tight-ish spread, news flowing.
-    # Directional strategies dominate (ensemble, entropy), BUT A-S is
-    # still allowed because a 2-4% spread on high volume is the best
-    # possible MM environment. The MM EV gate and VPIN guard prevent
-    # it from being picked off by informed flow.
+    # Directional strategies dominate (ensemble, entropy). Binance arb
+    # runs in every regime because its edge is venue-agnostic — a
+    # lagging Polymarket vs realtime Binance spot is always tradeable.
     Regime.INFORMATION_DRIVEN: {
         StrategyName.AVELLANEDA,
         StrategyName.ENTROPY,
         StrategyName.ENSEMBLE_AI,
         StrategyName.ARB,
+        StrategyName.BINANCE_ARB,
         StrategyName.JET,
         StrategyName.COPY,
     },
 
-    # Consensus-grind: the A-S natural habitat. Spread capture is the
-    # primary edge, directional strategies are also allowed because
-    # slow drift + mispricing still happens here.
+    # Consensus-grind: slow drift + micro-mispricing. A-S allowed but
+    # disabled at config level (unprofitable on Polymarket spreads).
     Regime.CONSENSUS_GRIND: {
         StrategyName.AVELLANEDA,
         StrategyName.ARB,
+        StrategyName.BINANCE_ARB,
         StrategyName.ENTROPY,
         StrategyName.ENSEMBLE_AI,
         StrategyName.COPY,
     },
 
     # Resolution cliff: <24h to resolve. Theta harvester dominates;
-    # arb if the book is crossed.
+    # arb if the book is crossed. Binance arb also fires here — a
+    # crypto market with an hour left that disagrees with Binance spot
+    # is the highest-confidence arb we can take.
     Regime.RESOLUTION_CLIFF: {
         StrategyName.THETA,
         StrategyName.ARB,
+        StrategyName.BINANCE_ARB,
     },
 
     # Illiquid noise: only truly untradeable markets land here now

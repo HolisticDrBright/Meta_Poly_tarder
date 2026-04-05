@@ -32,6 +32,7 @@ class StrategyName(str, Enum):
     ENTROPY = "entropy"
     AVELLANEDA = "avellaneda"
     ARB = "arb"
+    BINANCE_ARB = "binance_arb"
     ENSEMBLE_AI = "ensemble_ai"
     JET = "jet"
     COPY = "copy"

@@ -54,8 +54,10 @@ class SpecialistConfig:
     min_edge: float = _float(os.getenv("SPECIALIST_MIN_EDGE"), 0.05)
     dedupe_minutes: int = _int(os.getenv("SPECIALIST_DEDUPE_MINUTES"), 120)
     alchemy_polygon_url: str = os.getenv("ALCHEMY_POLYGON_URL", "")
-    # MiroFish swarm
-    mirofish_enabled: bool = _bool(os.getenv("MIROFISH_ENABLED"), True)
+    # MiroFish swarm — default OFF until the cheaper strategies are proven
+    # profitable. ~$4.50/day at 500 agents on gpt-4o-mini, not worth it
+    # until there's edge to amplify. Re-enable with MIROFISH_ENABLED=true.
+    mirofish_enabled: bool = _bool(os.getenv("MIROFISH_ENABLED"), False)
     mirofish_agents: int = _int(os.getenv("MIROFISH_AGENTS"), 500)
     mirofish_model: str = os.getenv("MIROFISH_MODEL", "gpt-4o-mini")
     mirofish_weight: float = _float(os.getenv("MIROFISH_WEIGHT"), 0.05)
@@ -65,8 +67,16 @@ class SpecialistConfig:
 @dataclass(frozen=True)
 class StrategyFlags:
     entropy: bool = _bool(os.getenv("STRATEGY_ENTROPY"), True)
-    avellaneda: bool = _bool(os.getenv("STRATEGY_AVELLANEDA"), True)
+    # Avellaneda-Stoikov is DISABLED by default. A production bot running
+    # the same strategy on Polymarket confirmed it's unprofitable on this
+    # venue — Polymarket's 1-2% spreads can't cover the 2% fee on winnings
+    # plus slippage plus adverse selection. Re-enable with
+    # STRATEGY_AVELLANEDA=true if/when Polymarket spreads widen.
+    avellaneda: bool = _bool(os.getenv("STRATEGY_AVELLANEDA"), False)
     arb: bool = _bool(os.getenv("STRATEGY_ARB"), True)
+    # Binance-vs-Polymarket crypto price arb — new primary profit engine
+    # since A-S is disabled. Zero AI cost, pure quant, runs every 15s.
+    binance_arb: bool = _bool(os.getenv("STRATEGY_BINANCE_ARB"), True)
     ensemble: bool = _bool(os.getenv("STRATEGY_ENSEMBLE"), True)
     jet: bool = _bool(os.getenv("STRATEGY_JET"), True)
     copy: bool = _bool(os.getenv("STRATEGY_COPY"), True)
@@ -101,10 +111,14 @@ class CopyConfig:
 
 @dataclass(frozen=True)
 class RiskConfig:
+    # Defaults tightened to match a production bot's proven sizing on
+    # Polymarket: $4/trade, ~4% per market cap. Small sizes get filled
+    # at the quoted price; large sizes walk the book and eat the edge
+    # in slippage. $300 bankroll × 4% = $12 max per market = 3 trades.
     max_portfolio_exposure: float = _float(os.getenv("MAX_PORTFOLIO_EXPOSURE"), 0.80)
-    max_single_market_pct: float = _float(os.getenv("MAX_SINGLE_MARKET_PCT"), 0.15)
+    max_single_market_pct: float = _float(os.getenv("MAX_SINGLE_MARKET_PCT"), 0.04)
     max_daily_loss_pct: float = _float(os.getenv("MAX_DAILY_LOSS_PCT"), 0.10)
-    max_trade_size_usdc: float = _float(os.getenv("MAX_TRADE_SIZE_USDC"), 30)
+    max_trade_size_usdc: float = _float(os.getenv("MAX_TRADE_SIZE_USDC"), 4)
     min_balance_usdc: float = _float(os.getenv("MIN_BALANCE_USDC"), 10)
 
 
