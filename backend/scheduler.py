@@ -69,6 +69,10 @@ class TradingScheduler:
             kelly_fraction=_kelly_mult,
             bankroll=_bankroll,
             max_trade_usdc=_max_trade,
+            # Lowered from the $25k default to match A-S and Polymarket
+            # reality. Typical liquid Polymarket markets are $2k-$20k;
+            # a $25k floor limits the screener to a tiny sliver.
+            min_liquidity=2000,
         )
         self.avellaneda = AvellanedaStoikovMM(
             gamma=settings.quant.as_gamma,
