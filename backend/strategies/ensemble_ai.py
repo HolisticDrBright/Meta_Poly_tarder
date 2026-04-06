@@ -119,7 +119,7 @@ class EnsembleAI(Strategy):
         min_edge: float = 0.05,
         bankroll: float = 300,
         kelly_fraction: float = 0.25,
-        max_trade_usdc: float = 4,
+        max_trade_usdc: float = 15,
     ) -> None:
         self.anthropic_key = anthropic_api_key
         self.openai_key = openai_api_key

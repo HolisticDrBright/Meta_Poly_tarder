@@ -115,16 +115,16 @@ class CopyConfig:
 @dataclass(frozen=True)
 class RiskConfig:
     # Defaults tightened to match a production bot's proven sizing on
-    # Polymarket: $4/trade, ~4% per market cap. Small sizes get filled
-    # at the quoted price; large sizes walk the book and eat the edge
-    # in slippage. $300 bankroll × 4% = $12 max per market = 3 trades.
-    # Exposure cap lowered from 0.80 → 0.65 — friend's bot hit gridlock
-    # at 82% exposure with no cash left for high-conviction opportunities.
-    # 65% keeps ~35% cash available for new signals.
-    max_portfolio_exposure: float = _float(os.getenv("MAX_PORTFOLIO_EXPOSURE"), 0.65)
-    max_single_market_pct: float = _float(os.getenv("MAX_SINGLE_MARKET_PCT"), 0.04)
-    max_daily_loss_pct: float = _float(os.getenv("MAX_DAILY_LOSS_PCT"), 0.10)
-    max_trade_size_usdc: float = _float(os.getenv("MAX_TRADE_SIZE_USDC"), 4)
+    # Sizing for a $300 bankroll. Previous $4/trade was too small to
+    # cover API costs (~$0.01/trade for Claude+GPT-4o). At $15/trade
+    # with 57% win rate, each winning trade earns ~$2-5 which covers
+    # API costs and generates real profit.
+    #   $15/trade × 10% market cap = $30 max per market = 2 positions
+    #   $300 × 75% exposure = $225 deployed across ~7-8 markets
+    max_portfolio_exposure: float = _float(os.getenv("MAX_PORTFOLIO_EXPOSURE"), 0.75)
+    max_single_market_pct: float = _float(os.getenv("MAX_SINGLE_MARKET_PCT"), 0.10)
+    max_daily_loss_pct: float = _float(os.getenv("MAX_DAILY_LOSS_PCT"), 0.15)
+    max_trade_size_usdc: float = _float(os.getenv("MAX_TRADE_SIZE_USDC"), 15)
     min_balance_usdc: float = _float(os.getenv("MIN_BALANCE_USDC"), 10)
 
 

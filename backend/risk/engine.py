@@ -66,10 +66,10 @@ class RiskEngine:
 
     def __init__(
         self,
-        max_portfolio_exposure: float = 0.65,
-        max_single_market_pct: float = 0.15,
-        max_daily_loss_pct: float = 0.10,
-        max_trade_size_usdc: float = 30,
+        max_portfolio_exposure: float = 0.75,
+        max_single_market_pct: float = 0.10,
+        max_daily_loss_pct: float = 0.15,
+        max_trade_size_usdc: float = 15,
         min_balance_usdc: float = 10,
         paper_trading: bool = True,
     ) -> None:
