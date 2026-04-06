@@ -396,10 +396,17 @@ class TradingScheduler:
                         result = await self.ensemble.run_ensemble(market)
                         self._ensemble_last_run[market.market_id] = time.time()
                         if result.debates and result.ensemble_confidence > 0:
-                            market.model_probability = result.ensemble_probability
+                            # Look up the CURRENT market object by ID —
+                            # refresh_markets may have replaced self.state.markets
+                            # while this coroutine was awaiting the API, making
+                            # the captured `market` reference stale.
+                            current = self.state.get_market(market.market_id)
+                            if current is None:
+                                current = market  # fallback
                             from backend.quant.entropy import kl_divergence as _kl
-                            market.kl_divergence = _kl(
-                                result.ensemble_probability, market.yes_price
+                            current.model_probability = result.ensemble_probability
+                            current.kl_divergence = _kl(
+                                result.ensemble_probability, current.yes_price
                             )
                             logger.info(
                                 f"Ensemble OK: {market.question[:40]} → "
