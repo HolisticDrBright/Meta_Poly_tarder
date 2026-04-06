@@ -944,10 +944,12 @@ class TradingScheduler:
                         self.state.win_rate = w / (w + l)
                     # Sync realized_pnl from DuckDB — the in-memory counter
                     # drifts from rounding across hundreds of open/close cycles.
+                    # Only sync P&L, NOT balance — balance is tracked by
+                    # add_position/close_position and recalculating it here
+                    # every 15s fights with those updates and breaks Sharpe.
                     db_pnl = float(stats[0].get("total_pnl", 0) or 0)
                     if db_pnl != 0:
                         self.state.realized_pnl = db_pnl
-                        self.state.balance = self.state.starting_capital - self.state.total_exposure + db_pnl
             except Exception:
                 pass
 
