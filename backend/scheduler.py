@@ -241,6 +241,10 @@ class TradingScheduler:
         "serie a", "bundesliga", "champions league", "world cup",
         "esports", "counter-strike", "valorant", "dota", "league of legends",
         "lol:", "overwatch", "call of duty", "fortnite", "rainbow six",
+        # Tennis tournaments
+        "monte carlo masters", "roland garros", "wimbledon", "us open tennis",
+        "australian open", "french open", "indian wells", "miami open",
+        "rolex masters",
     })
     _SPORTS_TEAMS = frozenset({
         "yankees", "marlins", "dodgers", "mets", "cubs", "red sox",
@@ -926,11 +930,11 @@ class TradingScheduler:
                     pass
 
             # Win rate from DuckDB trade stats (real resolved trades).
-            # Previous formula was nonsensical (P&L magnitude, not hit rate).
             try:
                 stats = self.duckdb.query(
                     "SELECT COUNT(CASE WHEN pnl > 0 THEN 1 END) as wins, "
-                    "COUNT(CASE WHEN pnl < 0 THEN 1 END) as losses "
+                    "COUNT(CASE WHEN pnl < 0 THEN 1 END) as losses, "
+                    "COALESCE(SUM(pnl), 0) as total_pnl "
                     "FROM trades WHERE trade_type = 'close'"
                 )
                 if stats:
@@ -938,6 +942,12 @@ class TradingScheduler:
                     l = int(stats[0].get("losses", 0) or 0)
                     if w + l > 0:
                         self.state.win_rate = w / (w + l)
+                    # Sync realized_pnl from DuckDB — the in-memory counter
+                    # drifts from rounding across hundreds of open/close cycles.
+                    db_pnl = float(stats[0].get("total_pnl", 0) or 0)
+                    if db_pnl != 0:
+                        self.state.realized_pnl = db_pnl
+                        self.state.balance = self.state.starting_capital - self.state.total_exposure + db_pnl
             except Exception:
                 pass
 
