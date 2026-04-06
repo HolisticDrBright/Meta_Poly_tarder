@@ -27,8 +27,11 @@ def _bool(val: str | None, default: bool) -> bool:
 
 @dataclass(frozen=True)
 class PredictionIntelligenceConfig:
-    # Database
-    duckdb_path: str = os.getenv("PI_DUCKDB_PATH", "data/prediction_intelligence.duckdb")
+    # Database — absolute path so systemd CWD changes don't break it
+    duckdb_path: str = os.getenv(
+        "PI_DUCKDB_PATH",
+        str(Path(__file__).resolve().parent.parent / "data" / "prediction_intelligence.duckdb"),
+    )
 
     # Decision Logger
     log_full_evidence: bool = _bool(os.getenv("PI_LOG_FULL_EVIDENCE"), True)

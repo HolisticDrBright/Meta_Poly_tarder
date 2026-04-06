@@ -162,8 +162,12 @@ class TradingScheduler:
             from prediction_intelligence.orchestrator import LoopOrchestrator
             self._pi_orchestrator = LoopOrchestrator()
             self._decision_logger = self._pi_orchestrator.decision_logger
+            # Force connection + schema creation now so we fail loud at
+            # startup instead of silently on the first log_decision call.
+            self._decision_logger._ensure_conn()
+            logger.info(f"Prediction Intelligence DB connected: {self._decision_logger.db_path}")
         except Exception as e:
-            logger.warning(f"Intelligence orchestrator unavailable — learning loop off: {e}")
+            logger.warning(f"Intelligence orchestrator unavailable — decision logging off: {e}", exc_info=True)
 
         # Specialist layer — attach decision logger so specialist opinions
         # also feed the learning loop for Brier scoring + weight tuning.
