@@ -101,15 +101,19 @@ class MarketCorrelationScanner(Strategy):
 
     def __init__(
         self,
-        min_edge: float = 0.02,
-        max_size: float = 40.0,
+        min_edge: float = 0.03,          # raised from 0.02 — too many false positives
+        max_size: float = 10.0,           # reduced from 40 — don't bet big on arb
+        max_signals_per_cycle: int = 3,   # cap per cycle to prevent capital drain
+        min_yes_price: float = 0.05,      # ignore penny markets (< 5¢)
         keyword_sim_threshold: float = 0.50,
         complement_tolerance: float = 0.03,
-        exclusive_sum_upper: float = 1.05,
-        exclusive_sum_lower: float = 0.85,
+        exclusive_sum_upper: float = 1.08,  # tighter — was 1.05
+        exclusive_sum_lower: float = 0.80,  # tighter — was 0.85
     ) -> None:
         self.min_edge = min_edge
         self.max_size = max_size
+        self.max_signals = max_signals_per_cycle
+        self.min_yes_price = min_yes_price
         self.keyword_sim_threshold = keyword_sim_threshold
         self.complement_tolerance = complement_tolerance
         self.exclusive_sum_upper = exclusive_sum_upper
@@ -119,11 +123,14 @@ class MarketCorrelationScanner(Strategy):
 
     def scan(self, markets: list[MarketState]) -> list[OrderIntent]:
         """Synchronous entry-point: detect violations and return OrderIntents."""
+        # Filter out penny markets — they produce false arb signals
+        eligible = [m for m in markets if m.yes_price >= self.min_yes_price]
+
         violations: list[_Violation] = []
         try:
-            violations.extend(self._check_complementary(markets))
-            violations.extend(self._check_parent_child(markets))
-            violations.extend(self._check_mutually_exclusive(markets))
+            violations.extend(self._check_complementary(eligible))
+            violations.extend(self._check_parent_child(eligible))
+            violations.extend(self._check_mutually_exclusive(eligible))
         except Exception:
             logger.exception("correlation_scanner: unexpected error during scan")
             return []
@@ -132,7 +139,9 @@ class MarketCorrelationScanner(Strategy):
         for v in violations:
             if v.edge < self.min_edge:
                 continue
-            size = min(self.max_size, v.edge * 800)
+            # Cap edge at 0.20 — anything claiming >20% is likely a false positive
+            capped_edge = min(0.20, v.edge)
+            size = min(self.max_size, capped_edge * 200)
             if size < 1.0:
                 continue
             intents.append(
@@ -144,18 +153,21 @@ class MarketCorrelationScanner(Strategy):
                     side=v.side,
                     order_type=OrderType.LIMIT,
                     price=v.price,
-                    size_usdc=size,
-                    confidence=min(v.edge / 0.05, 1.0),
+                    size_usdc=round(size, 2),
+                    confidence=min(capped_edge / 0.10, 1.0),
                     reason=v.reason,
                 )
             )
 
+        # Sort by edge, cap per cycle to prevent capital drain
         intents.sort(key=lambda x: x.confidence, reverse=True)
+        intents = intents[:self.max_signals]
         if intents:
             logger.info(
-                "correlation_scanner: %d signals (top edge %.4f)",
+                "correlation_scanner: %d signals (top edge %.4f), capped to %d",
                 len(intents),
                 intents[0].confidence,
+                self.max_signals,
             )
         return intents
 
