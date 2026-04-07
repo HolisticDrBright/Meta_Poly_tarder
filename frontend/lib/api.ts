@@ -239,3 +239,16 @@ export function killSwitch() {
 export function unkill() {
   return request<any>("/api/unkill", { method: "POST" });
 }
+
+// ── Live Settings ─────────────────────────────────────────────
+
+export function fetchSettings() {
+  return request<any>("/api/settings");
+}
+
+export function updateSettings(updates: Record<string, any>) {
+  return request<any>("/api/settings/update", {
+    method: "POST",
+    body: JSON.stringify(updates),
+  });
+}
