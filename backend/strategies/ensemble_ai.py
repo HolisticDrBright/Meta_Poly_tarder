@@ -324,6 +324,28 @@ class EnsembleAI(Strategy):
         spread = statistics.stdev(probs) if len(probs) > 1 else 0.0
         confidence = max(0, 1 - spread / 0.5)
 
+        # ── Disagreement filter ──────────────────────────────────
+        # If Claude and GPT-4o diverge by more than 15 percentage points,
+        # the signal is low-conviction — mark as HOLD regardless of edge.
+        # This prevents betting when the AI ensemble is uncertain, which
+        # is when losses are most likely.
+        model_probs = [d.final_probability for d in debates if d]
+        if len(model_probs) >= 2:
+            model_spread = abs(model_probs[0] - model_probs[1])
+            if model_spread > 0.15:
+                logger.info(
+                    f"Ensemble SKIP: model disagreement {model_spread:.1%} "
+                    f"(claude={model_probs[0]:.3f} vs gpt4={model_probs[1]:.3f}) "
+                    f"on {market.question[:40]}"
+                )
+                return EnsembleResult(
+                    debates=debates,
+                    ensemble_probability=ensemble_p,
+                    ensemble_confidence=confidence * 0.3,  # heavily penalized
+                    recommended_action="HOLD",
+                    spread=spread,
+                )
+
         if ensemble_p > market.yes_price + self.min_edge:
             action = "BUY_YES"
         elif ensemble_p < market.yes_price - self.min_edge:
