@@ -124,12 +124,16 @@ export default function DashboardTab() {
   }, [markets]);
 
   const growthData: PortfolioGrowthPoint[] = useMemo(() => {
-    // Real equity curve points only. No synthetic fill-in.
-    if (equityCurve.length >= 2) {
-      return equityCurve.slice(-16).map((p: any) => ({
-        day: new Date(p.timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
-        value: p.balance,
-      }));
+    // Show realized P&L growth over time (more meaningful than raw balance
+    // which drops when positions open and recovers when they close).
+    // Sample evenly across the full history for a smooth line.
+    if (equityCurve.length < 2) return [];
+    const step = Math.max(1, Math.floor(equityCurve.length / 30));
+    const sampled = equityCurve.filter((_: any, i: number) => i % step === 0 || i === equityCurve.length - 1);
+    return sampled.slice(-30).map((p: any) => ({
+      day: new Date(p.timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric", hour: "numeric" }),
+      value: (p.balance || 0) + (p.unrealized_pnl || 0),
+    }));
     }
     return [];
   }, [equityCurve]);
