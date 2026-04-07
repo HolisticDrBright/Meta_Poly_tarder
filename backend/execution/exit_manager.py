@@ -51,6 +51,9 @@ class ExitRule:
     resolution_hours: float = 1.0
     resolution_min_profit: float = 0.10
 
+    # --- Max age: unconditional close to prevent zombie positions ---
+    max_age_hours: float = 72.0  # 3 days max, regardless of P&L
+
 
 @dataclass
 class ExitSignal:
@@ -217,7 +220,19 @@ class ExitManager:
                 urgency="normal",
             )
 
-        # ── 6. Resolution auto-close ─────────────────────────────
+        # ── 6. Max age — unconditional close to prevent zombie positions
+        if age_h >= self.rules.max_age_hours:
+            return ExitSignal(
+                position=pos,
+                reason=(
+                    f"MAX AGE: {age_h:.0f}h old (limit={self.rules.max_age_hours:.0f}h), "
+                    f"pnl={pnl_pct:.1%} — closing to free capital"
+                ),
+                pnl=pos.pnl,
+                urgency="normal",
+            )
+
+        # ── 7. Resolution auto-close ─────────────────────────────
         if (
             market
             and market.hours_to_close <= self.rules.resolution_hours

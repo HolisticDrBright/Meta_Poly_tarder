@@ -97,9 +97,16 @@ class RiskEngine:
         """
         try:
             from backend.state import system_state
-            sc = getattr(system_state, "starting_capital", None)
-            if sc and sc > 0:
-                self.state.balance = float(sc)
+            # Use the ACTUAL current balance for exposure checks, not
+            # starting_capital. This ensures the risk engine respects
+            # the real cash available (shrinks limits on drawdown,
+            # expands them as the bot profits).
+            real_balance = getattr(system_state, "balance", 0) or 0
+            if real_balance > 0:
+                self.state.balance = float(real_balance)
+            else:
+                sc = getattr(system_state, "starting_capital", 300)
+                self.state.balance = float(sc) if sc and sc > 0 else 300.0
             self.state.positions = list(system_state.positions)
             self.state.total_exposure = sum(p.size_usdc for p in self.state.positions)
             cumulative = float(getattr(system_state, "realized_pnl", 0) or 0)

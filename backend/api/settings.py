@@ -40,6 +40,7 @@ class SettingsResponse(BaseModel):
     age_hours_full_target: float
     age_hours_min_target: float
     min_profit_to_exit: float
+    max_age_hours: float
 
     # Strategy toggles
     avellaneda_enabled: bool
@@ -69,6 +70,7 @@ class SettingsUpdate(BaseModel):
     age_hours_full_target: Optional[float] = Field(None, ge=0.5, le=48)
     age_hours_min_target: Optional[float] = Field(None, ge=1, le=168)
     min_profit_to_exit: Optional[float] = Field(None, ge=0.005, le=0.20)
+    max_age_hours: Optional[float] = Field(None, ge=6, le=336)
 
     # Strategy toggles
     avellaneda_enabled: Optional[bool] = None
@@ -116,6 +118,7 @@ async def get_settings() -> SettingsResponse:
         age_hours_full_target=(exit_rules.age_hours_full_target if exit_rules else 2.0),
         age_hours_min_target=(exit_rules.age_hours_min_target if exit_rules else 24.0),
         min_profit_to_exit=(exit_rules.min_profit_to_exit if exit_rules else 0.02),
+        max_age_hours=(exit_rules.max_age_hours if exit_rules else 72.0),
 
         avellaneda_enabled=settings.strategies.avellaneda,
         entropy_enabled=settings.strategies.entropy,
@@ -174,6 +177,9 @@ async def update_settings(body: SettingsUpdate):
     if body.min_profit_to_exit is not None:
         rules.min_profit_to_exit = body.min_profit_to_exit
         changes.append(f"min_profit_exit={body.min_profit_to_exit:.1%}")
+    if body.max_age_hours is not None:
+        rules.max_age_hours = body.max_age_hours
+        changes.append(f"max_age={body.max_age_hours}h")
 
     # --- Strategy toggles (config is frozen, so set on the settings module) ---
     from backend.config import settings
