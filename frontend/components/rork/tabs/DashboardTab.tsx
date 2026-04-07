@@ -134,8 +134,6 @@ export default function DashboardTab() {
       day: new Date(p.timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric", hour: "numeric" }),
       value: (p.balance || 0) + (p.unrealized_pnl || 0),
     }));
-    }
-    return [];
   }, [equityCurve]);
 
   const marketOpps = useMemo(() => {
