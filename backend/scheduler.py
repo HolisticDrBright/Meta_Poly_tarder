@@ -127,12 +127,18 @@ class TradingScheduler:
         self.duckdb = DuckDBStorage()
         self.sqlite = SQLiteState()
 
-        # Exit manager
+        # Exit manager — swing exits capture model edge, time-decay
+        # lowers targets as positions age, trailing stop protects gains.
         self.exit_manager = ExitManager(ExitRule(
-            take_profit_pct=0.30,
+            edge_capture_pct=0.60,        # sell when 60% of model edge captured
+            take_profit_pct=0.30,         # fallback when no model_probability
             stop_loss_pct=-0.20,
-            resolution_hours=1.0,
             trailing_stop_pct=0.15,
+            age_hours_full_target=2.0,    # first 2h: hold for full target
+            age_hours_min_target=24.0,    # by 24h: accept 2% return
+            min_profit_to_exit=0.02,
+            resolution_hours=1.0,
+            resolution_min_profit=0.10,
         ))
 
         # Ensemble AI (for model probability — uses real APIs when keys configured)
@@ -195,6 +201,8 @@ class TradingScheduler:
         # own write connection to data/prediction_intelligence.db and
         # the trigger endpoint crashes on the DuckDB lock.
         self.state._pi_orchestrator = self._pi_orchestrator
+        # Expose scheduler ref so the settings API can modify risk/exit params live.
+        self.state._scheduler = self
         # Wire the real starting capital so the dashboard and ROI calculations
         # use $300 (or whatever STARTING_CAPITAL is set to) instead of the
         # legacy $10k default baked into state.py.

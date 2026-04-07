@@ -169,6 +169,10 @@ app.include_router(whale.router, prefix="/api/whale-tracker", tags=["Whale Track
 app.include_router(jet.router, prefix="/api/jet", tags=["Jet Tracker"])
 app.include_router(admin.router, prefix="/api/admin", tags=["Admin"])
 
+# Live settings API — adjust bet size, risk, strategy toggles without restart
+from backend.api import settings as settings_api
+app.include_router(settings_api.router, prefix="/api/settings", tags=["Settings"])
+
 # Prediction Intelligence Layer
 try:
     from prediction_intelligence.api import router as intelligence_router

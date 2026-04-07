@@ -1,17 +1,19 @@
 """
-Position exit manager — handles take-profit, stop-loss, and auto-close.
+Position exit manager — handles swing exits, stop-loss, and auto-close.
 
 Runs every position price update cycle (15s) and checks:
-  1. Take-profit: close if PnL exceeds target %
+  1. Swing exit: close when price reaches edge-capture target
   2. Stop-loss: close if loss exceeds max %
-  3. Resolution close: close if market closes in <1h and position is profitable
-  4. Theta exit: close if time decay has extracted most of the edge
+  3. Trailing stop: track peak and close on drawdown
+  4. Time-decay exit: lower profit target as position ages
+  5. Resolution close: close if market closes in <1h and profitable
+  6. Near-certain: close if price >0.95 / <0.05 and profitable
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -24,17 +26,30 @@ logger = logging.getLogger(__name__)
 class ExitRule:
     """Configurable exit parameters."""
 
+    # --- Swing exit (model-probability based) ---
+    # Capture this fraction of the model edge before selling.
+    # E.g., bought YES at 0.12, model says 0.22, edge_capture=0.60
+    # → target = 0.12 + 0.60*(0.22-0.12) = 0.18 → sell at 18¢
+    edge_capture_pct: float = 0.60
+
+    # Fall back to flat % take-profit when no model_probability
     take_profit_pct: float = 0.30     # 30% profit → close
+
+    # --- Stop-loss ---
     stop_loss_pct: float = -0.20      # 20% loss → close
-    # Resolution auto-close: ONLY fires on profitable positions. The
-    # previous default of min_profit=0 allowed the rule to close at
-    # break-even one hour before actual resolution, stealing every
-    # theta-harvester win (entered at 0.95, exited at 0.95, left the
-    # 5% resolution payoff uncaptured). The settlement watcher now
-    # handles T-0 closes at the real outcome price.
+
+    # --- Trailing stop ---
+    trailing_stop_pct: float = 0.15   # 15% drawdown from peak → close
+
+    # --- Time decay: lower the profit target as position ages ---
+    # After this many hours, start reducing the edge_capture target
+    age_hours_full_target: float = 2.0    # first 2h: hold for full target
+    age_hours_min_target: float = 24.0    # by 24h: accept minimum profit
+    min_profit_to_exit: float = 0.02      # always require at least 2% return
+
+    # --- Resolution ---
     resolution_hours: float = 1.0
-    resolution_min_profit: float = 0.10  # at least 10¢ profit before early exit
-    trailing_stop_pct: float = 0.0    # 0 = disabled, >0 = trailing stop from peak
+    resolution_min_profit: float = 0.10
 
 
 @dataclass
@@ -48,11 +63,11 @@ class ExitSignal:
 
 
 class ExitManager:
-    """Evaluates open positions against exit rules."""
+    """Evaluates open positions against exit rules with smart swing exits."""
 
     def __init__(self, rules: ExitRule | None = None) -> None:
         self.rules = rules or ExitRule()
-        self._peak_prices: dict[str, float] = {}  # for trailing stop
+        self._peak_prices: dict[str, float] = {}
 
     def check_exits(
         self,
@@ -71,69 +86,138 @@ class ExitManager:
 
         return signals
 
+    def _age_hours(self, pos: Position) -> float:
+        """How many hours this position has been open."""
+        now = datetime.now(timezone.utc)
+        opened = pos.opened_at if pos.opened_at.tzinfo else pos.opened_at.replace(tzinfo=timezone.utc)
+        return max(0, (now - opened).total_seconds() / 3600)
+
+    def _time_adjusted_capture(self, age_h: float) -> float:
+        """Lower the edge capture target as the position ages.
+
+        Fresh positions (< age_hours_full_target): hold for full target.
+        Old positions (> age_hours_min_target): accept minimum profit.
+        In between: linear interpolation.
+        """
+        r = self.rules
+        if age_h <= r.age_hours_full_target:
+            return r.edge_capture_pct
+        if age_h >= r.age_hours_min_target:
+            return r.min_profit_to_exit
+        # Linear decay
+        progress = (age_h - r.age_hours_full_target) / (r.age_hours_min_target - r.age_hours_full_target)
+        return r.edge_capture_pct - progress * (r.edge_capture_pct - r.min_profit_to_exit)
+
     def _check_position(
         self, pos: Position, market: MarketState | None
     ) -> Optional[ExitSignal]:
         """Check a single position against all exit rules."""
 
-        # 1. Take-profit
-        # pnl_pct is return on capital invested: pnl / size_usdc.
-        # (The old formula divided by entry_price*size_usdc, which has
-        # wrong units and made exits fire at ~1/entry_price times the
-        # intended threshold — e.g. a 30% take-profit was firing at 15%
-        # real return at entry=0.5, 6% real return at entry=0.2.)
-        if pos.size_usdc > 0:
-            pnl_pct = pos.pnl / pos.size_usdc
-            if pnl_pct >= self.rules.take_profit_pct:
+        if pos.size_usdc <= 0:
+            return None
+
+        pnl_pct = pos.pnl / pos.size_usdc
+        age_h = self._age_hours(pos)
+
+        # ── 1. Swing exit (model-probability based) ──────────────
+        # If we have a model_probability, compute a price target based
+        # on how much of the model's edge we want to capture, adjusted
+        # for how long we've been holding.
+        if market and getattr(market, "model_probability", 0) > 0:
+            model_p = market.model_probability
+            entry_p = pos.entry_price
+
+            # Edge = model's fair value minus our entry
+            if pos.side == Side.YES:
+                edge = model_p - entry_p
+            else:
+                edge = (1.0 - model_p) - entry_p
+
+            if edge > 0:
+                # How much of the edge to capture (decays with time)
+                capture_pct = self._time_adjusted_capture(age_h)
+
+                # Target price = entry + capture_pct * edge
+                target_price = entry_p + capture_pct * edge
+
+                # Current price of the token we hold
+                current_p = pos.current_price
+
+                if current_p >= target_price and pos.pnl > 0:
+                    return ExitSignal(
+                        position=pos,
+                        reason=(
+                            f"SWING EXIT: price {current_p:.3f} >= target {target_price:.3f} "
+                            f"(edge={edge:.3f}, capture={capture_pct:.0%}, age={age_h:.1f}h)"
+                        ),
+                        pnl=pos.pnl,
+                        urgency="normal",
+                    )
+
+            # Edge has flipped negative (model now agrees with market
+            # or disagrees with our side) — tighter stop
+            if edge < -0.03 and age_h > 1.0:
                 return ExitSignal(
                     position=pos,
-                    reason=f"TAKE PROFIT: {pnl_pct:.1%} >= {self.rules.take_profit_pct:.0%}",
+                    reason=(
+                        f"EDGE FLIP: model now {model_p:.3f} vs entry {entry_p:.3f} "
+                        f"(edge={edge:+.3f}, age={age_h:.1f}h)"
+                    ),
                     pnl=pos.pnl,
                     urgency="normal",
                 )
 
-            # 2. Stop-loss
-            if pnl_pct <= self.rules.stop_loss_pct:
-                return ExitSignal(
-                    position=pos,
-                    reason=f"STOP LOSS: {pnl_pct:.1%} <= {self.rules.stop_loss_pct:.0%}",
-                    pnl=pos.pnl,
-                    urgency="immediate",
-                )
+        # ── 2. Flat take-profit (fallback when no model_probability) ─
+        if pnl_pct >= self.rules.take_profit_pct:
+            return ExitSignal(
+                position=pos,
+                reason=f"TAKE PROFIT: {pnl_pct:.1%} >= {self.rules.take_profit_pct:.0%}",
+                pnl=pos.pnl,
+                urgency="normal",
+            )
 
-        # 3. Trailing stop (if enabled)
+        # ── 3. Stop-loss ─────────────────────────────────────────
+        if pnl_pct <= self.rules.stop_loss_pct:
+            return ExitSignal(
+                position=pos,
+                reason=f"STOP LOSS: {pnl_pct:.1%} <= {self.rules.stop_loss_pct:.0%}",
+                pnl=pos.pnl,
+                urgency="immediate",
+            )
+
+        # ── 4. Trailing stop ─────────────────────────────────────
         if self.rules.trailing_stop_pct > 0:
             key = pos.market_id
             current = pos.current_price
             peak = self._peak_prices.get(key, current)
             if current >= peak:
-                # Always record the peak (including first observation)
                 self._peak_prices[key] = current
                 peak = current
             if peak > 0:
-                drawdown_from_peak = (peak - current) / peak
-                if drawdown_from_peak >= self.rules.trailing_stop_pct:
+                drawdown = (peak - current) / peak
+                if drawdown >= self.rules.trailing_stop_pct:
                     return ExitSignal(
                         position=pos,
-                        reason=f"TRAILING STOP: {drawdown_from_peak:.1%} drawdown from peak {peak:.3f}",
+                        reason=f"TRAILING STOP: {drawdown:.1%} drawdown from peak {peak:.3f}",
                         pnl=pos.pnl,
                         urgency="immediate",
                     )
 
-        # 4. Resolution auto-close — ONLY fires if the position is
-        # meaningfully profitable (pnl > min_profit > 0). The original
-        # rule closed at T-1h regardless of pnl, which stole every
-        # theta-harvester win: positions entered at 0.95 and exited at
-        # 0.95 an hour before actual resolution, leaving the 5% payoff
-        # on the table. Now the settlement watcher (scheduler.run_
-        # settlement_watcher) handles real resolution at T-0 by
-        # closing at the actual outcome price (0.0 or 1.0).
-        #
-        # This early exit only fires on markets that are ALREADY in
-        # profit — use it to lock in gains on illiquid near-resolution
-        # markets where the book may vanish before the watcher can
-        # react. Losers hold to actual resolution instead of
-        # crystallizing the loss prematurely.
+        # ── 5. Time-decay exit (aging unprofitable positions) ────
+        # If position has been open > 24h and is barely profitable,
+        # close it to free capital for better opportunities.
+        if age_h >= self.rules.age_hours_min_target and pnl_pct >= self.rules.min_profit_to_exit:
+            return ExitSignal(
+                position=pos,
+                reason=(
+                    f"AGE EXIT: {age_h:.0f}h old, pnl={pnl_pct:.1%} >= "
+                    f"min {self.rules.min_profit_to_exit:.0%} — freeing capital"
+                ),
+                pnl=pos.pnl,
+                urgency="normal",
+            )
+
+        # ── 6. Resolution auto-close ─────────────────────────────
         if (
             market
             and market.hours_to_close <= self.rules.resolution_hours
@@ -147,11 +231,7 @@ class ExitManager:
                 urgency="normal",
             )
 
-        # 5. Near-certain resolution (price >0.95 or <0.05)
-        # Only exit if the position is profitable — a position that's
-        # losing at the near-certain boundary is about to resolve
-        # against us, and crystallizing the loss by closing at 0.95
-        # gives up any remaining option value. Let it resolve instead.
+        # ── 7. Near-certain resolution ───────────────────────────
         if market and pos.pnl > 0:
             if pos.side == Side.YES and market.yes_price >= 0.95:
                 return ExitSignal(
