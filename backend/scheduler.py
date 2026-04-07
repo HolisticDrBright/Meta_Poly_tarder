@@ -160,7 +160,7 @@ class TradingScheduler:
         # Prevents the job from re-analyzing the same market every cycle when
         # it always sorts to the top of the priority list.
         self._ensemble_last_run: dict[str, float] = {}
-        self._ensemble_dedupe_seconds: int = 600  # 10 min
+        self._ensemble_dedupe_seconds: int = 1800  # 30 min — don't re-analyze same market too often
 
         # Prediction Intelligence — shared orchestrator owns DecisionLogger,
         # RetrospectiveAnalyzer, and WeightAdjuster. A single instance is
@@ -405,7 +405,7 @@ class TradingScheduler:
             eligible.sort(key=priority, reverse=True)
 
             # Cap per cycle — keeps API cost predictable
-            MAX_PER_CYCLE = 8
+            MAX_PER_CYCLE = 5
             CONCURRENCY = 3
             batch = eligible[:MAX_PER_CYCLE]
 
@@ -1486,14 +1486,12 @@ class TradingScheduler:
             name="Position price updater",
         )
 
-        # AI ensemble model probabilities (every 3 min — manages API costs)
-        # max_instances=2 so if a single cycle briefly overshoots 3 min the
-        # next trigger still runs instead of being silently dropped with
-        # "maximum number of running instances reached (1)".
-        # coalesce=True collapses any missed triggers into one catch-up run.
+        # AI ensemble model probabilities (every 10 min — reduced from 3 min
+        # to cut API costs ~70%. Sonnet→Haiku + GPT-4o→4o-mini saves another
+        # 90%. Total: ~$3-5/day instead of ~$77/day.
         self.scheduler.add_job(
             self.run_ensemble_probabilities,
-            IntervalTrigger(minutes=3),
+            IntervalTrigger(minutes=10),
             id="ensemble_probabilities",
             name="AI ensemble probabilities",
             max_instances=2,

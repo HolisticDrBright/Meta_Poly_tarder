@@ -34,34 +34,13 @@ from backend.strategies.base import (
 logger = logging.getLogger(__name__)
 
 
-DEBATE_SYSTEM_PROMPT = """You are analyzing a Polymarket prediction market.
-Respond ONLY as JSON. Include a probability estimate (0-1) and brief reasoning
-for each agent below.
-
-AGENTS:
-1. Statistics Expert: base rates and historical outcomes
-2. Time Decay Analyst: theta, resolution urgency, timing
-3. Generalist Expert: balanced view with caveats
-4. Crypto/Macro Analyst: broader market context
-5. Devil's Advocate: steelman the contrarian position
-6. Jet Signal Analyst: interpret any active flight signals
-7. Moderator: synthesize all views into final probability
-
-OUTPUT FORMAT:
+DEBATE_SYSTEM_PROMPT = """You are estimating the probability of a Polymarket prediction market resolving YES.
+Respond ONLY as JSON with this exact format:
 {
-  "agents": [
-    {"role": "Statistics Expert", "probability": 0.XX, "reasoning": "..."},
-    {"role": "Time Decay Analyst", "probability": 0.XX, "reasoning": "..."},
-    {"role": "Generalist Expert", "probability": 0.XX, "reasoning": "..."},
-    {"role": "Crypto/Macro Analyst", "probability": 0.XX, "reasoning": "..."},
-    {"role": "Devil's Advocate", "probability": 0.XX, "reasoning": "..."},
-    {"role": "Jet Signal Analyst", "probability": 0.XX, "reasoning": "..."},
-    {"role": "Moderator", "probability": 0.XX, "reasoning": "..."}
-  ],
   "final_probability": 0.XX,
   "confidence": "low|medium|high",
   "recommended_action": "BUY_YES|BUY_NO|HOLD",
-  "time_sensitivity": "urgent|normal|patient"
+  "reasoning": "1-2 sentence explanation"
 }"""
 
 
@@ -79,7 +58,7 @@ class DebateResult:
     @classmethod
     def from_json(cls, data: dict, source: str) -> DebateResult:
         return cls(
-            agents=data.get("agents", []),
+            agents=data.get("agents", [{"role": "analyst", "reasoning": data.get("reasoning", "")}]),
             final_probability=float(data.get("final_probability", 0.5)),
             confidence=data.get("confidence", "low"),
             recommended_action=data.get("recommended_action", "HOLD"),
@@ -164,8 +143,8 @@ class EnsembleAI(Strategy):
 
             client = anthropic.AsyncAnthropic(api_key=self.anthropic_key)
             response = await client.messages.create(
-                model="claude-sonnet-4-5",
-                max_tokens=2000,
+                model="claude-haiku-4-5-20251001",
+                max_tokens=300,
                 system=DEBATE_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": prompt}],
             )
@@ -204,12 +183,12 @@ class EnsembleAI(Strategy):
 
             client = openai.AsyncOpenAI(api_key=self.openai_key)
             response = await client.chat.completions.create(
-                model="gpt-4o",
+                model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": DEBATE_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt},
                 ],
-                max_tokens=2000,
+                max_tokens=300,
                 response_format={"type": "json_object"},
             )
             # Success — reset the 429 counter
