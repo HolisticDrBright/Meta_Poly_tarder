@@ -38,6 +38,7 @@ class StrategyName(str, Enum):
     COPY = "copy"
     THETA = "theta"
     MANUAL = "manual"
+    CORRELATION_ARB = "correlation_arb"
 
 
 # ── data models ─────────────────────────────────────────────────────

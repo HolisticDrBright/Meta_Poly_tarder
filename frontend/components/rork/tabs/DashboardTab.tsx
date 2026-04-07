@@ -5,6 +5,7 @@ import { Activity, Zap, Target, TrendingUp, TrendingDown, CheckCircle, XCircle, 
 import { Colors, type ActiveTrade, type RegimeInfo, type PortfolioGrowthPoint } from "@/lib/rork-types";
 import { usePortfolioStore } from "@/stores/portfolioStore";
 import { useMarketStore } from "@/stores/marketStore";
+import { fetchEquityCurve } from "@/lib/api";
 import OpportunityCard from "../OpportunityCard";
 import PortfolioChart from "../PortfolioChart";
 
@@ -73,6 +74,23 @@ export default function DashboardTab() {
     const id = setInterval(load, 30000);
     return () => { cancelled = true; clearInterval(id); };
   }, []);
+
+  // Fetch equity curve for the growth chart
+  const setEquityCurve = usePortfolioStore((s) => s.setEquityCurve);
+  useEffect(() => {
+    let cancelled = false;
+    async function loadCurve() {
+      try {
+        const resp = await fetchEquityCurve();
+        if (cancelled) return;
+        const pts = resp?.data_points || [];
+        if (pts.length > 0) setEquityCurve(pts);
+      } catch {}
+    }
+    loadCurve();
+    const id = setInterval(loadCurve, 60000); // refresh every 60s
+    return () => { cancelled = true; clearInterval(id); };
+  }, [setEquityCurve]);
 
   const totalPnL = (stats.realized_pnl || 0) + (stats.unrealized_pnl || 0);
   // Real starting capital from backend, not hardcoded $10k

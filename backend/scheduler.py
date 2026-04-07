@@ -102,10 +102,19 @@ class TradingScheduler:
             max_size_usdc=settings.copy.max_size_usdc,
             confluence_required=settings.copy.confluence_required,
         )
+
+        # Correlation scanner — detects logically related market mispricings
+        from backend.strategies.correlation_scanner import MarketCorrelationScanner
+        self.correlation_scanner = MarketCorrelationScanner()
+
+        # Wallet pattern analyzer — smart money confirming signal
+        from backend.strategies.wallet_analyzer import WalletPatternAnalyzer
+        self.wallet_analyzer = WalletPatternAnalyzer()
         self.jet = JetSignalStrategy(adsb_client=self.adsb)
 
         # Infrastructure
         self.aggregator = SignalAggregator()
+        self.aggregator.attach_wallet_analyzer(self.wallet_analyzer)
         self.risk = RiskEngine(
             max_portfolio_exposure=settings.risk.max_portfolio_exposure,
             max_single_market_pct=settings.risk.max_single_market_pct,
@@ -485,6 +494,18 @@ class TradingScheduler:
                     )
         except Exception as e:
             logger.error(f"Arb scanner failed: {e}")
+
+    async def run_correlation_scanner(self) -> None:
+        """Scan for logically correlated market mispricings."""
+        if not self.state.markets:
+            return
+        try:
+            intents = self.correlation_scanner.scan(self.state.markets)
+            self._all_intents.extend(intents)
+            if intents:
+                logger.info(f"Correlation scanner: {len(intents)} arb opportunities")
+        except Exception as e:
+            logger.error(f"Correlation scanner failed: {e}")
 
     async def run_avellaneda_mm(self) -> None:
         """Update A-S market maker quotes."""
@@ -994,6 +1015,18 @@ class TradingScheduler:
                     self.state.add_whale_trade(whale_entry)
                     await self.state.broadcast("whale_trade", whale_entry)
 
+                    # Feed wallet pattern analyzer for smart money signal
+                    try:
+                        self.wallet_analyzer.record_activity(
+                            wallet=target_addr,
+                            display_name=whale_entry["display_name"],
+                            market_id=whale_entry["market_id"],
+                            side=whale_entry["side"],
+                            size_usdc=whale_entry["size_usdc"],
+                        )
+                    except Exception:
+                        pass
+
                     # Queue for copy trading
                     copy_event = CopyTradeEvent(
                         target=CopyTarget(
@@ -1485,6 +1518,12 @@ class TradingScheduler:
             IntervalTrigger(seconds=15),
             id="binance_arb",
             name="Binance crypto arb",
+        )
+        self.scheduler.add_job(
+            self.run_correlation_scanner,
+            IntervalTrigger(seconds=60),
+            id="correlation_scanner",
+            name="Correlation arb scanner",
         )
         # A-S market maker is off by default — your friend's production data
         # and our own trade log (34 opens / 27 closes averaging ~$0.10 per

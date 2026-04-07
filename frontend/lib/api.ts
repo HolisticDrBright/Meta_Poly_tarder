@@ -80,6 +80,10 @@ export function fetchPortfolioStats() {
   return request<any>("/api/portfolio/stats");
 }
 
+export function fetchEquityCurve() {
+  return request<any>("/api/portfolio/equity-curve");
+}
+
 export function closePosition(marketId: string) {
   return request<any>("/api/portfolio/close", {
     method: "POST",

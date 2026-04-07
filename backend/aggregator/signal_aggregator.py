@@ -88,6 +88,11 @@ class SignalAggregator:
         self.weights = weights or STRATEGY_WEIGHTS
         self.min_confluence = min_confluence_for_boost
         self.confluence_boost = confluence_boost
+        self._wallet_analyzer = None  # set by scheduler after init
+
+    def attach_wallet_analyzer(self, analyzer) -> None:
+        """Attach the WalletPatternAnalyzer for smart money boosting."""
+        self._wallet_analyzer = analyzer
 
     def _load_learned_weights(self) -> dict[StrategyName, float]:
         """Pull the latest learned strategy weights from the learning loop.
@@ -159,6 +164,14 @@ class SignalAggregator:
                 # KL divergence bonus
                 if intent.kl_divergence > 0:
                     base_score += intent.kl_divergence * 0.5
+
+                # Smart money boost — if whale wallets agree, bump score
+                if self._wallet_analyzer is not None:
+                    base_score, _signal = self._wallet_analyzer.boost_intent_score(
+                        market_id=intent.market_id,
+                        side=intent.side.value,
+                        base_score=base_score,
+                    )
 
                 # Update intent confluence count
                 intent.confluence_count = confluence
