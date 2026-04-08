@@ -138,6 +138,7 @@ class ThetaHarvester(Strategy):
             fair_probability=fair_for_side,
             market_price=price,
             spread=market_state.spread,
+            category=market_state.category,
         ):
             return None
 

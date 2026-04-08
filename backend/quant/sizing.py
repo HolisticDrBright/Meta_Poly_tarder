@@ -39,52 +39,78 @@ from backend.strategies.base import StrategyName
 #     fee_cost_per_dollar ≈ fee * p * (1 - market_price)
 #
 # For a small-edge trade symmetric around 0.5, that's ≈ fee / 4 ≈ 0.5%,
-# not the full 2%. The previous version of this module applied the
-# full 2% as a flat haircut, which was double-counting and made the
-# EV gate reject almost every Polymarket opportunity.
-POLYMARKET_WINNINGS_FEE = 0.02
+# Polymarket fee structure (updated Apr 2026):
+#   - Dynamic taker fees: peaks at ~3.15% near 50¢ prices on most categories
+#   - Maker rebates: 25-50% depending on category
+#   - Geopolitics: FEE-FREE (the only zero-fee category)
+#   - The old flat 2% on winnings is now just the base — actual cost depends
+#     on price and whether you're taking or making liquidity.
+POLYMARKET_BASE_FEE = 0.02
+POLYMARKET_MAX_TAKER_FEE = 0.0315  # 3.15% peak at 50¢
+
+# Fee-free categories where taker fees don't apply
+FEE_FREE_CATEGORIES = frozenset({"geopolitics", "politics"})
+
+# Categories with higher maker rebates (50% instead of 25%)
+HIGH_REBATE_CATEGORIES = frozenset({"finance", "crypto"})
 
 # Assumed slippage beyond the visible best-bid/ask on paper fills.
-# Kept at 0.003 for the EV gate (entry decisions). The friend's
-# "bid-0.01" recommendation was about EXIT sell pricing for live
-# orders, not the entry EV gate. Raising this too high starves A-S
-# of all opportunities (14/14 markets rejected by EV gate).
 DEFAULT_EXPECTED_SLIPPAGE = 0.003
+
+
+def dynamic_taker_fee(market_price: float, category: str = "") -> float:
+    """Compute the actual taker fee based on price and category.
+
+    Polymarket's dynamic fee curve peaks near 50¢ (max uncertainty).
+    Geopolitics is fee-free. Other categories follow a parabolic curve.
+    """
+    cat = category.lower().strip()
+    if any(fc in cat for fc in FEE_FREE_CATEGORIES):
+        return 0.0
+
+    # Parabolic fee curve: peaks at 50¢, zero at 0¢ and 100¢
+    # fee(p) = max_fee * 4 * p * (1 - p)
+    p = max(0.001, min(0.999, market_price))
+    return POLYMARKET_MAX_TAKER_FEE * 4.0 * p * (1.0 - p)
 
 
 # ── 1. EV gate for directional strategies ──────────────────
 
-def expected_fee_cost(fair_probability: float, market_price: float, fee: float = POLYMARKET_WINNINGS_FEE) -> float:
+def expected_fee_cost(
+    fair_probability: float,
+    market_price: float,
+    fee: float = POLYMARKET_BASE_FEE,
+    category: str = "",
+) -> float:
     """
-    Fee cost per dollar staked, accounting for Polymarket charging
-    `fee` on winnings (not stakes). Symmetric in side: if you buy YES
-    at p and expect to win with probability fair, the fee per $ is
-    fee * fair * (1 - p).
+    Fee cost per dollar staked, using the dynamic fee curve.
+
+    For fee-free categories (geopolitics), returns 0.
+    For others, uses the price-dependent taker fee.
     """
     fair = max(0.001, min(0.999, fair_probability))
     mkt = max(0.001, min(0.999, market_price))
-    return fee * fair * (1.0 - mkt)
+    actual_fee = dynamic_taker_fee(mkt, category) if category else fee
+    return actual_fee * fair * (1.0 - mkt)
 
 
 def ev_gate_passes(
     fair_probability: float,
     market_price: float,
     spread: float,
-    fee: float = POLYMARKET_WINNINGS_FEE,
+    fee: float = POLYMARKET_BASE_FEE,
     extra_slippage: float = DEFAULT_EXPECTED_SLIPPAGE,
+    category: str = "",
 ) -> bool:
     """
     Return True only if the directional edge is large enough to cover
-    fees (on winnings), half the spread (taker crossing the book), and
+    fees (dynamic, based on price + category), half the spread, and
     expected slippage.
 
-        required_edge = fee_cost_on_winnings + spread/2 + slippage
-        signed_edge   = |fair_p − market_p|
-
-    Hard filter — negative-EV trades are rejected, not scaled.
+    Geopolitics markets pass more easily since they're fee-free.
     """
     edge = abs(fair_probability - market_price)
-    fee_cost = expected_fee_cost(fair_probability, market_price, fee)
+    fee_cost = expected_fee_cost(fair_probability, market_price, fee, category)
     required = fee_cost + (spread / 2.0) + extra_slippage
     return edge >= required
 
@@ -93,11 +119,12 @@ def required_edge_for_market(
     fair_probability: float,
     market_price: float,
     spread: float,
-    fee: float = POLYMARKET_WINNINGS_FEE,
+    fee: float = POLYMARKET_BASE_FEE,
+    category: str = "",
 ) -> float:
     """Minimum directional edge a strategy needs before the trade is EV+."""
     return (
-        expected_fee_cost(fair_probability, market_price, fee)
+        expected_fee_cost(fair_probability, market_price, fee, category)
         + (spread / 2.0)
         + DEFAULT_EXPECTED_SLIPPAGE
     )
@@ -122,27 +149,25 @@ def required_edge_for_market(
 def mm_ev_gate_passes(
     quoted_spread: float,
     market_price: float,
-    fee: float = POLYMARKET_WINNINGS_FEE,
+    fee: float = POLYMARKET_BASE_FEE,
     extra_slippage: float = DEFAULT_EXPECTED_SLIPPAGE,
     adverse_selection_bps: float = 30.0,
+    category: str = "",
 ) -> bool:
     """
-    EV check for market makers. The MM captures (quoted_spread / 2) per
-    round-trip fill on average. That must cover fees + slippage +
-    adverse selection (the cost of being picked off when a toxic trader
-    hits your quote).
+    EV check for market makers. Makers pay ZERO taker fees and get
+    25-50% rebates on most categories (Apr 2026 fee structure).
 
-        capture   = quoted_spread / 2
-        required  = fee*p*(1-p) + slippage + adverse_selection
-        passes    = capture >= required
+    The MM captures (quoted_spread / 2) per round-trip fill on average.
+    That must cover adverse selection + slippage. Fee cost is zero for
+    makers (they earn rebates instead), so the gate is easier to pass
+    than the taker EV gate.
     """
     capture = quoted_spread / 2.0
-    # Fee on winnings is symmetric: at the mid, winning_prob ≈ market_p
-    # and payoff ≈ (1 - market_p), so fee_cost ≈ fee * p * (1-p).
-    mkt = max(0.001, min(0.999, market_price))
-    fee_cost = fee * mkt * (1.0 - mkt)
+    # Makers pay no taker fee — they get rebates instead.
+    # Only adverse selection + slippage need to be covered.
     adverse = adverse_selection_bps / 10000.0
-    required = fee_cost + extra_slippage + adverse
+    required = extra_slippage + adverse
     return capture >= required
 
 

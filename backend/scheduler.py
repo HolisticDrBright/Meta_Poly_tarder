@@ -393,7 +393,11 @@ class TradingScheduler:
                 age_s = max(0.0, now - last)
                 # Age bonus saturates at 2× dedupe window
                 age_bonus = min(1.0, age_s / max(1.0, dedupe_s * 2)) * 0.5
-                return edge * 2.0 + liq_term + age_bonus
+                # Fee-free categories (geopolitics) get a priority bonus
+                # because trades there don't pay taker fees → lower edge needed
+                cat = (getattr(m, "category", "") or "").lower()
+                fee_bonus = 0.3 if "politic" in cat or "geopolitic" in cat else 0.0
+                return edge * 2.0 + liq_term + age_bonus + fee_bonus
 
             # Filter out markets still in dedupe window, then sort by priority
             eligible = [

@@ -111,10 +111,12 @@ class EntropyScreener(Strategy):
             market_p = market_state.no_price
 
         # EV gate: skip trades that don't beat fees + half-spread + slippage
+        # Geopolitics markets are fee-free → lower edge threshold
         if not ev_gate_passes(
             fair_probability=fair_p,
             market_price=market_p,
             spread=market_state.spread,
+            category=market_state.category,
         ):
             req = required_edge_for_market(fair_p, market_p, market_state.spread)
             logger.debug(
