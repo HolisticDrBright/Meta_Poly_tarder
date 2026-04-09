@@ -1165,10 +1165,17 @@ class TradingScheduler:
             # Restore from SQLite (saved every 2 minutes)
             equity = self.sqlite.load_strategy_state("__equity__")
             if equity:
-                self.state.balance = equity.get("balance", settings.trading.starting_capital)
+                # In live mode, DON'T restore balance from SQLite — it's
+                # stale paper trading data. The wallet sync will set the
+                # real on-chain balance within 15 seconds. Only restore
+                # P&L and trade counts.
+                if settings.trading.paper_trading:
+                    self.state.balance = equity.get("balance", settings.trading.starting_capital)
+                # else: leave balance at starting_capital (set earlier), wallet sync will correct
                 self.state.realized_pnl = equity.get("realized_pnl", 0)
                 self.state.trades_today = equity.get("trades_today", 0)
-                logger.info(f"Restored from SQLite: balance=${self.state.balance:.2f}, pnl=${self.state.realized_pnl:.2f}")
+                mode = "paper" if settings.trading.paper_trading else "LIVE (balance from wallet sync)"
+                logger.info(f"Restored from SQLite [{mode}]: balance=${self.state.balance:.2f}, pnl=${self.state.realized_pnl:.2f}")
 
             # Also check DuckDB for cumulative P&L from trade records
             # This is more accurate than the SQLite snapshot if the bot crashed
