@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from backend.quant.entropy import kelly_fraction
+from backend.quant.entropy import kelly_fraction, empirical_kelly
 from backend.quant.regime import Regime
 from backend.strategies.base import StrategyName
 
@@ -180,27 +180,26 @@ def kelly_size_usdc(
     kelly_fraction_multiplier: float = 0.25,
     max_trade_usdc: float = 30.0,
     min_trade_usdc: float = 1.0,
+    edge_variance: float = 0.0,
 ) -> float:
     """
-    Edge-proportional position size via fractional Kelly.
+    Edge-proportional position size via Empirical Kelly.
+
+    Upgrade from standard fractional Kelly: when edge_variance > 0,
+    applies the Empirical Kelly penalty (1 - CV_edge) to reduce sizing
+    on uncertain edges. When edge_variance=0 (default), behaves exactly
+    like standard quarter-Kelly.
 
     Flow:
-      1. Compute raw Kelly fraction f* from (fair_p, market_p).
-      2. Scale down by kelly_fraction_multiplier (default 0.25 = quarter-Kelly).
-      3. Apply to bankroll.
-      4. Clamp to [min_trade_usdc, max_trade_usdc].
-      5. If Kelly is <= 0 (no edge or negative edge), return 0 — the
-         caller should not open a position.
-
-    Kelly can produce tiny sizes when the edge is real but small. That's
-    the whole point: bet proportional to edge, not flat. A big edge gets
-    a big position, a tiny edge gets a tiny position. The max cap
-    protects against model over-confidence.
+      1. Compute Empirical Kelly fraction from (fair_p, market_p, variance).
+      2. Apply to bankroll.
+      3. Clamp to [min_trade_usdc, max_trade_usdc].
+      4. If Kelly is <= 0 (no edge), return 0.
     """
-    f = kelly_fraction(fair_probability, market_price)
+    f = empirical_kelly(fair_probability, market_price, edge_variance, kelly_fraction_multiplier)
     if f <= 0:
         return 0.0
-    sized = bankroll * f * kelly_fraction_multiplier
+    sized = bankroll * f
     sized = min(sized, max_trade_usdc)
     if sized < min_trade_usdc:
         return 0.0

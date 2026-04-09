@@ -377,13 +377,16 @@ class EnsembleAI(Strategy):
         ):
             return None
 
-        # Kelly sizing
-        from backend.quant.entropy import quarter_kelly
+        # Empirical Kelly — penalizes sizing when models disagree.
+        # edge_variance = spread^2 (variance of model probability estimates).
+        # High disagreement → smaller position. Full agreement → standard Kelly.
+        from backend.quant.entropy import empirical_kelly
+        edge_var = result.spread ** 2  # spread = stdev of model probs
 
         if side == Side.YES:
-            f = quarter_kelly(result.ensemble_probability, market_state.yes_price)
+            f = empirical_kelly(result.ensemble_probability, market_state.yes_price, edge_var)
         else:
-            f = quarter_kelly(1.0 - result.ensemble_probability, market_state.no_price)
+            f = empirical_kelly(1.0 - result.ensemble_probability, market_state.no_price, edge_var)
         size = min(abs(f) * self.bankroll, self.max_trade_usdc)
         if size < 1.0:
             return None

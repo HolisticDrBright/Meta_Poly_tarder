@@ -96,6 +96,52 @@ def quarter_kelly(model_p: float, market_price: float) -> float:
     return kelly_fraction(model_p, market_price) * 0.25
 
 
+def empirical_kelly(
+    model_p: float,
+    market_price: float,
+    edge_variance: float = 0.0,
+    kelly_mult: float = 0.25,
+) -> float:
+    """Empirical Kelly — adjusts for edge uncertainty.
+
+    Standard Kelly assumes you know your edge exactly. In practice,
+    your probability estimate has noise. Empirical Kelly penalizes
+    position size based on how uncertain the edge estimate is:
+
+        f_empirical = f_kelly × kelly_mult × (1 − CV_edge)
+
+    where CV_edge = coefficient of variation of the edge estimate.
+    High CV (noisy edge) → smaller position. Low CV (confident edge)
+    → full quarter-Kelly.
+
+    Parameters
+    ----------
+    model_p        : Your estimated probability
+    market_price   : Current market price
+    edge_variance  : Variance of your edge estimate (from calibration
+                     data or model disagreement). 0 = fully confident.
+    kelly_mult     : Kelly fraction multiplier (default 0.25 = quarter)
+
+    Returns
+    -------
+    float  Adjusted Kelly fraction, always >= 0
+    """
+    f = kelly_fraction(model_p, market_price)
+    if f <= 0:
+        return 0.0
+
+    # CV_edge = std(edge) / |edge|. Clamp to [0, 0.95] so we never
+    # zero out entirely (always bet at least 5% of Kelly if edge > 0).
+    edge = abs(model_p - market_price)
+    if edge > 0 and edge_variance > 0:
+        import math
+        cv_edge = min(0.95, math.sqrt(edge_variance) / edge)
+    else:
+        cv_edge = 0.0
+
+    return f * kelly_mult * (1.0 - cv_edge)
+
+
 def entropy_efficiency(current_price: float, base_rate_price: float) -> float:
     """
     Entropy efficiency ratio R.
