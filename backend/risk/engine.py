@@ -110,7 +110,12 @@ class RiskEngine:
             self.state.positions = list(system_state.positions)
             self.state.total_exposure = sum(p.size_usdc for p in self.state.positions)
             cumulative = float(getattr(system_state, "realized_pnl", 0) or 0)
-            self.state.daily_pnl = cumulative - self.state.daily_pnl_baseline
+            unrealized = float(getattr(system_state, "unrealized_pnl", 0) or 0)
+            # Include unrealized losses in the daily loss check so a
+            # position that's down 50% triggers the limit even before
+            # it's closed. Only count unrealized if it's negative (losses).
+            total_daily = (cumulative - self.state.daily_pnl_baseline) + min(0, unrealized)
+            self.state.daily_pnl = total_daily
         except Exception:
             pass
 

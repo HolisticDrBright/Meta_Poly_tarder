@@ -876,6 +876,20 @@ class TradingScheduler:
                     f"EXIT: {signal.reason} — {signal.position.question[:40]} "
                     f"PnL=${signal.pnl:.2f}"
                 )
+                # In live mode, place a real SELL order before closing in state
+                if not self.state.paper_trading:
+                    try:
+                        sell_result = await self.executor.live_sell(signal.position)
+                        if not sell_result.success:
+                            logger.warning(
+                                f"EXIT SELL FAILED: {signal.position.question[:30]} — "
+                                f"{sell_result.error}. Keeping position open."
+                            )
+                            continue  # Don't close in state if sell failed
+                    except Exception as e:
+                        logger.error(f"EXIT SELL exception: {e}. Keeping position open.")
+                        continue
+
                 closed = self.state.close_position(signal.position.market_id)
                 if closed:
                     self.exit_manager.clear_tracking(closed.market_id)
@@ -985,6 +999,29 @@ class TradingScheduler:
                         self.state.realized_pnl = db_pnl
             except Exception:
                 pass
+
+            # In live mode, periodically sync balance from on-chain wallet
+            # so we have ground truth on actual available funds.
+            if not self.state.paper_trading:
+                try:
+                    from backend.data_layer.clob_auth import CLOBAuth
+                    auth = getattr(self, "_clob_auth", None)
+                    if auth is None:
+                        auth = CLOBAuth()
+                        self._clob_auth = auth
+                    on_chain = await auth.get_balance()
+                    if on_chain is not None and on_chain > 0:
+                        # Only log if there's a significant drift
+                        drift = abs(self.state.balance - on_chain)
+                        if drift > 1.0:
+                            logger.info(
+                                f"Wallet sync: on-chain=${on_chain:.2f} "
+                                f"vs in-memory=${self.state.balance:.2f} "
+                                f"(drift=${drift:.2f})"
+                            )
+                            self.state.balance = on_chain
+                except Exception as e:
+                    logger.debug(f"Wallet balance sync skipped: {e}")
 
         except Exception as e:
             logger.error(f"Position price update failed: {e}")
