@@ -250,6 +250,8 @@ class TradingScheduler:
             volume_24h=gm.volume_24h,
             end_date=gm.end_date,
             active=gm.active,
+            yes_token_id=getattr(gm, "yes_token_id", ""),
+            no_token_id=getattr(gm, "no_token_id", ""),
             entropy_bits=market_entropy(gm.yes_price),
         )
 
@@ -1406,6 +1408,13 @@ class TradingScheduler:
                     per_intent_prices[si.intent.market_id] = (
                         m.yes_price if si.intent.side == Side.YES else m.no_price
                     )
+                    # Set the correct CLOB token_id on the intent.
+                    # The CLOB needs the specific YES or NO token_id,
+                    # not the condition_id (which identifies the market).
+                    if si.intent.side == Side.YES and m.yes_token_id:
+                        si.intent.condition_id = m.yes_token_id
+                    elif si.intent.side == Side.NO and m.no_token_id:
+                        si.intent.condition_id = m.no_token_id
                 results = await self.executor.execute_batch(approved, market_prices=per_intent_prices)
 
                 for si, result in zip(approved, results):

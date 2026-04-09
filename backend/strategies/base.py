@@ -71,6 +71,10 @@ class MarketState:
     end_date: Optional[datetime] = None
     active: bool = True
 
+    # CLOB token IDs — needed for live order placement
+    yes_token_id: str = ""
+    no_token_id: str = ""
+
     # derived (filled by quant modules)
     entropy_bits: float = 0.0
     model_probability: float = 0.0

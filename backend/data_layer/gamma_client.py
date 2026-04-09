@@ -45,6 +45,8 @@ class GammaMarket:
     best_ask: float
     spread: float
     outcomes: list[str]
+    yes_token_id: str  # CLOB token ID for YES outcome
+    no_token_id: str   # CLOB token ID for NO outcome
     raw: dict[str, Any]
 
     @classmethod
@@ -89,6 +91,26 @@ class GammaMarket:
             except (ValueError, AttributeError):
                 pass
 
+        # Parse CLOB token IDs — the CLOB needs these, not the condition_id.
+        # Gamma API returns clobTokenIds as JSON string or list: ["YES_token", "NO_token"]
+        yes_token = ""
+        no_token = ""
+        raw_tokens = data.get("clobTokenIds")
+        if raw_tokens:
+            try:
+                if isinstance(raw_tokens, str):
+                    import json
+                    parsed_tokens = json.loads(raw_tokens)
+                else:
+                    parsed_tokens = raw_tokens
+                if len(parsed_tokens) >= 2:
+                    yes_token = str(parsed_tokens[0])
+                    no_token = str(parsed_tokens[1])
+                elif len(parsed_tokens) == 1:
+                    yes_token = str(parsed_tokens[0])
+            except (json.JSONDecodeError, ValueError, TypeError):
+                pass
+
         return cls(
             id=str(data.get("id", "")),
             condition_id=str(data.get("conditionId", data.get("condition_id", ""))),
@@ -106,6 +128,8 @@ class GammaMarket:
             best_ask=best_ask,
             spread=best_ask - best_bid,
             outcomes=data.get("outcomes", ["Yes", "No"]),
+            yes_token_id=yes_token,
+            no_token_id=no_token,
             raw=data,
         )
 
