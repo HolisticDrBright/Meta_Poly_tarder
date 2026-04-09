@@ -216,8 +216,17 @@ class TradingScheduler:
         # use $300 (or whatever STARTING_CAPITAL is set to) instead of the
         # legacy $10k default baked into state.py.
         self.state.starting_capital = settings.trading.starting_capital
-        if self.state.balance <= 0 or self.state.balance == 10_000.0:
+        # Reset balance to starting capital when:
+        #   - First run (balance is default 10k or 0)
+        #   - Switching to live mode (paper balance is meaningless for live)
+        #   - Balance drifted below min_balance (stale paper state)
+        if (
+            self.state.balance <= 0
+            or self.state.balance == 10_000.0
+            or not settings.trading.paper_trading  # live mode → always reset
+        ):
             self.state.balance = settings.trading.starting_capital
+            logger.info(f"Balance reset to starting capital: ${settings.trading.starting_capital:.2f}")
 
         # Local accumulator
         self._all_intents: list[OrderIntent] = []
