@@ -116,12 +116,24 @@ class CLOBLiveClient:
             price_clamped = max(0.001, min(0.999, round(price, 4)))
             shares = round(size_usdc / price_clamped, 2)
 
-            order_args = {
-                "token_id": token_id,
-                "price": price_clamped,
-                "size": shares,  # SHARES, not USDC
-                "side": BUY,
-            }
+            # py-clob-client requires OrderArgs object, not a plain dict.
+            # Try the typed class first, fall back to dict for older versions.
+            try:
+                from py_clob_client.clob_types import OrderArgs
+                order_args = OrderArgs(
+                    token_id=token_id,
+                    price=price_clamped,
+                    size=shares,
+                    side=BUY,
+                )
+            except ImportError:
+                # Older py-clob-client versions may use a different import
+                order_args = {
+                    "token_id": token_id,
+                    "price": price_clamped,
+                    "size": shares,
+                    "side": BUY,
+                }
 
             order = client.create_order(order_args)
             result = client.post_order(order)
@@ -156,12 +168,21 @@ class CLOBLiveClient:
             from py_clob_client.order_builder.constants import SELL
 
             sell_price = max(0.001, round(price - 0.01, 4))  # 1¢ below bid
-            order_args = {
-                "token_id": token_id,
-                "price": sell_price,
-                "size": round(size_shares, 2),
-                "side": SELL,
-            }
+            try:
+                from py_clob_client.clob_types import OrderArgs
+                order_args = OrderArgs(
+                    token_id=token_id,
+                    price=sell_price,
+                    size=round(size_shares, 2),
+                    side=SELL,
+                )
+            except ImportError:
+                order_args = {
+                    "token_id": token_id,
+                    "price": sell_price,
+                    "size": round(size_shares, 2),
+                    "side": SELL,
+                }
 
             order = client.create_order(order_args)
             result = client.post_order(order)
