@@ -1,14 +1,20 @@
 """
-VPN Health Guard — ensures all trading traffic goes through the proxy.
+VPN Health Guard — optional proxy connectivity check.
 
-Startup gate: blocks all trading until VPN is verified.
-Runtime monitor: checks every 5 minutes, halts trading on VPN drop.
+When VPN_REQUIRED=False (default): all methods return healthy immediately
+and no network checks are performed. The app starts and runs without any
+proxy configured.
 
-Flow:
-  1. On startup: check IP via proxy → must not be US, must not be VPS IP
-  2. If check fails: log error, send Telegram alert, exit
-  3. Every 5 min: re-check IP through proxy
-  4. On VPN drop: pause strategies, cancel orders, alert, retry 5x at 30s
+When VPN_REQUIRED=True (opt-in): verifies that PROXY_URL is reachable on
+startup and monitors connectivity every check_interval seconds at runtime.
+Users are responsible for configuring their own VPN or proxy at the OS
+level — this guard only checks that the configured proxy responds.
+
+Flow (VPN_REQUIRED=True only):
+  1. On startup: check IP via proxy → must not be VPS IP
+  2. If check fails: log error, return False (caller decides whether to exit)
+  3. Every 5 min: re-check proxy connectivity
+  4. On drop: retry 5x at 30s, then invoke on_drop_callback
   5. If no recovery: enter safe halt mode
 """
 
@@ -34,9 +40,7 @@ class VPNStatus:
 
 
 class VPNGuard:
-    """Gates all trading behind a verified VPN connection."""
-
-    BLOCKED_COUNTRIES = {"US", "USA", "United States"}
+    """Optional proxy connectivity guard. No-op when VPN_REQUIRED=False."""
 
     def __init__(
         self,
@@ -107,17 +111,6 @@ class VPNGuard:
             ip = data.get("ip", "")
             country = data.get("country", "")
             org = data.get("org", "")
-
-            # Verify: not US and not VPS IP
-            if country in self.BLOCKED_COUNTRIES:
-                status = VPNStatus(
-                    healthy=False, ip=ip, country=country, org=org,
-                    error=f"VPN routing to blocked country: {country}",
-                )
-                self._healthy = False
-                self._last_status = status
-                logger.error(f"VPN CHECK FAILED: IP={ip}, country={country}")
-                return status
 
             if self.vps_ip and ip == self.vps_ip:
                 status = VPNStatus(

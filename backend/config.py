@@ -37,7 +37,17 @@ class TradingConfig:
     wallet_address: str = os.getenv("POLYMARKET_WALLET_ADDRESS", "")
     relayer_api_key: str = os.getenv("POLYMARKET_RELAYER_API_KEY", "")
     signature_type: int = _int(os.getenv("SIGNATURE_TYPE"), 0)
+
+    # PAPER_TRADING: controls whether strategy fills go to the paper ledger
+    # or the real Polymarket CLOB. Defaults True — safe by default.
     paper_trading: bool = _bool(os.getenv("PAPER_TRADING"), True)
+
+    # POLYMARKET_LIVE: secondary hard gate for live order placement.
+    # Both POLYMARKET_LIVE=true AND PAPER_TRADING=false must be set to
+    # allow real orders to reach the CLOB. Either flag alone is not enough.
+    # Defaults False — users must explicitly opt in to live trading.
+    polymarket_live: bool = _bool(os.getenv("POLYMARKET_LIVE"), False)
+
     starting_capital: float = _float(os.getenv("STARTING_CAPITAL"), 300.0)
 
 
@@ -139,7 +149,14 @@ class AlertConfig:
 class VPNConfig:
     proxy_url: str = os.getenv("PROXY_URL", "")
     check_url: str = os.getenv("VPN_CHECK_URL", "https://ipinfo.io/json")
+
+    # VPN_REQUIRED: optional — users route their own traffic at the OS level
+    # if desired. When False (default), VPNGuard is a no-op and the app
+    # starts cleanly without any proxy configured.
+    # When True, the guard verifies the configured PROXY_URL is reachable
+    # on startup and every check_interval seconds at runtime.
     required: bool = _bool(os.getenv("VPN_REQUIRED"), False)
+
     check_interval: int = _int(os.getenv("VPN_CHECK_INTERVAL_SECONDS"), 300)
 
     @property
