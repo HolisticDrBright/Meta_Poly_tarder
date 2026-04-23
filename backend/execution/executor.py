@@ -9,6 +9,7 @@ using py-clob-client for EIP-712 signing.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -30,6 +31,7 @@ class ExecutionResult:
     fill_size: float = 0.0
     paper: bool = True
     error: str = ""
+    code: str = ""  # machine-readable error code, e.g. "LIVE_DISABLED"
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -271,7 +273,15 @@ class OrderExecutor:
             self.paper_trading = True
             return {"ok": True, "mode": "paper"}
 
-        # Going live — require signing credentials.
+        # Going live — require POLYMARKET_LIVE env flag.
+        if os.getenv("POLYMARKET_LIVE", "").lower() != "true":
+            return {
+                "ok": False,
+                "code": "LIVE_DISABLED",
+                "error": "Live trading is disabled. Set POLYMARKET_LIVE=true and PAPER_TRADING=false to enable. See docs/enabling-live-trading.md.",
+            }
+
+        # Require signing credentials.
         if not self._private_key:
             return {
                 "ok": False,
@@ -349,6 +359,22 @@ class OrderExecutor:
         Posts a limit order, then polls for fill confirmation (up to 30s).
         Only returns success if the order actually filled on-chain.
         """
+        # Hard gate: both POLYMARKET_LIVE=true and paper_trading=False required.
+        # Returns a structured error — never raises — so the strategy loop
+        # can log and continue without retrying.
+        from backend.config import settings
+        if os.getenv("POLYMARKET_LIVE", "").lower() != "true" or settings.trading.paper_trading:
+            logger.warning("Live order blocked by LIVE_DISABLED gate")
+            return ExecutionResult(
+                success=False,
+                paper=False,
+                code="LIVE_DISABLED",
+                error=(
+                    "Live trading is disabled. Set POLYMARKET_LIVE=true and "
+                    "PAPER_TRADING=false to enable. See docs/enabling-live-trading.md."
+                ),
+            )
+
         if not self._live_client:
             logger.error("Live client not configured — check POLYMARKET_PRIVATE_KEY")
             return ExecutionResult(success=False, error="Live client not configured")
