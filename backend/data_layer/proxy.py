@@ -1,12 +1,13 @@
 """
-Proxy-aware aiohttp session factory.
+Optional proxy aiohttp session factory.
 
-All HTTP clients use get_proxied_session() instead of raw aiohttp.ClientSession().
-Supports both HTTP proxy (gluetun default) and SOCKS5 proxy.
+When PROXY_URL is empty (default): get_proxied_session() returns a plain
+aiohttp.ClientSession() with no proxy, and get_proxy_url() returns None.
+All callers pass proxy=None to aiohttp which means direct connection.
 
-When PROXY_URL starts with http:// → uses aiohttp's native proxy support.
-When PROXY_URL starts with socks5:// → uses aiohttp-socks ProxyConnector.
-When PROXY_URL is empty → direct connection.
+When PROXY_URL is set (opt-in):
+  http:// → aiohttp native proxy support (proxy kwarg per-request).
+  socks5:// → aiohttp-socks ProxyConnector (requires pip install aiohttp-socks).
 """
 
 from __future__ import annotations

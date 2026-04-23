@@ -5,8 +5,8 @@ Used by the Binance arb strategy to detect when Polymarket's binary
 "will BTC hit $X by Y" markets lag the real Binance spot price. Zero
 AI cost, zero authentication — public price endpoint.
 
-Runs through the ProtonVPN proxy like everything else (Binance allows
-EU traffic, so the Dublin exit works fine).
+Uses the shared proxy factory (proxy.py). When PROXY_URL is unset,
+sessions connect directly with no proxy.
 """
 
 from __future__ import annotations
