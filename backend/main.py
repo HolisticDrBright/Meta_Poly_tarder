@@ -61,7 +61,9 @@ async def lifespan(app: FastAPI):
     global trading_scheduler, vpn_guard
     logger.info("=" * 60)
     logger.info("  POLYMARKET INTELLIGENCE SYSTEM")
-    logger.info(f"  Paper trading: {settings.trading.paper_trading}")
+    logger.info(f"  Paper trading:    {settings.trading.paper_trading}")
+    logger.info(f"  Live trading:     {settings.trading.polymarket_live}")
+    logger.info(f"  VPN required:     {settings.vpn.required}")
     logger.info("=" * 60)
 
     # Configure proxy for all HTTP clients
@@ -92,6 +94,8 @@ async def lifespan(app: FastAPI):
             duckdb.close()
             sqlite.close()
             return
+    else:
+        logger.info("VPN not required — starting without proxy")
 
     duckdb.connect()
     sqlite.connect()
